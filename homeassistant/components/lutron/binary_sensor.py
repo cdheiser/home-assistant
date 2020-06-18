@@ -7,18 +7,21 @@ from homeassistant.components.binary_sensor import (
 )
 
 from . import LUTRON_CONTROLLER, LUTRON_DEVICES, LutronDevice
+from .const import DOMAIN
 
 
-def setup_platform(hass, config, add_entities, discovery_info=None):
-    """Set up the Lutron occupancy sensors."""
-    if discovery_info is None:
-        return
-    devs = []
-    for (area_name, device) in hass.data[LUTRON_DEVICES]["binary_sensor"]:
-        dev = LutronOccupancySensor(area_name, device, hass.data[LUTRON_CONTROLLER])
-        devs.append(dev)
-
-    add_entities(devs)
+async def async_setup_entry(hass, entry, async_add_entities):
+    """Set up occupancy sensors for a Lutron deployment."""
+    async_add_entities(
+        LutronOccupancySensor(
+            suggested_area,
+            device,
+            hass.data[DOMAIN][entry.entry_id][LUTRON_CONTROLLER],
+        )
+        for (suggested_area, device) in hass.data[DOMAIN][entry.entry_id][
+            LUTRON_DEVICES
+        ]["binary_sensor"]
+    )
 
 
 class LutronOccupancySensor(LutronDevice, BinarySensorEntity):
@@ -46,7 +49,7 @@ class LutronOccupancySensor(LutronDevice, BinarySensorEntity):
         # The default LutronDevice naming would create 'Kitchen Occ Kitchen',
         # but since there can only be one OccupancyGroup per area we go
         # with something shorter.
-        return f"{self._area_name} Occupancy"
+        return f"{self._suggested_area} Occupancy"
 
     @property
     def extra_state_attributes(self):

@@ -129,6 +129,7 @@ FLOWS = [
     "locative",
     "logi_circle",
     "luftdaten",
+    "lutron",
     "lutron_caseta",
     "lyric",
     "mailgun",
