@@ -15,9 +15,10 @@ from homeassistant.const import (
     ATTR_SUPPORTED_FEATURES,
     CLOUD_NEVER_EXPOSED_ENTITIES,
     CONF_NAME,
+    EVENT_HOMEASSISTANT_STARTED,
     STATE_UNAVAILABLE,
 )
-from homeassistant.core import Context, HomeAssistant, State, callback
+from homeassistant.core import Context, CoreState, HomeAssistant, State, callback
 from homeassistant.helpers.area_registry import AreaEntry
 from homeassistant.helpers.device_registry import DeviceEntry
 from homeassistant.helpers.entity_registry import RegistryEntry
@@ -103,6 +104,16 @@ class AbstractConfig(ABC):
         """Perform async initialization of config."""
         self._store = GoogleConfigStore(self.hass)
         await self._store.async_load()
+
+        if self.hass.state == CoreState.running:
+            await self.async_sync_entities_all()
+            return
+
+        async def sync_google(_):
+            """Sync entities to Google."""
+            await self.async_sync_entities_all()
+
+        self.hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, sync_google)
 
     @property
     def enabled(self):
@@ -193,7 +204,10 @@ class AbstractConfig(ABC):
         """Sync all entities to Google."""
         # Remove any pending sync
         self._google_sync_unsub.pop(agent_user_id, lambda: None)()
-        return await self._async_request_sync_devices(agent_user_id)
+        status = await self._async_request_sync_devices(agent_user_id)
+        if status == 404:
+            await self.async_disconnect_agent_user(agent_user_id)
+        return status
 
     async def async_sync_entities_all(self):
         """Sync all entities to Google for all registered agents."""
@@ -255,13 +269,17 @@ class AbstractConfig(ABC):
         if webhook_id is None:
             return
 
-        webhook.async_register(
-            self.hass,
-            DOMAIN,
-            "Local Support",
-            webhook_id,
-            self._handle_local_webhook,
-        )
+        try:
+            webhook.async_register(
+                self.hass,
+                DOMAIN,
+                "Local Support",
+                webhook_id,
+                self._handle_local_webhook,
+            )
+        except ValueError:
+            _LOGGER.info("Webhook handler is already defined!")
+            return
 
         self._local_sdk_active = True
 
@@ -346,7 +364,7 @@ class RequestData:
         source: str,
         request_id: str,
         devices: list[dict] | None,
-    ):
+    ) -> None:
         """Initialize the request data."""
         self.config = config
         self.source = source
@@ -370,7 +388,9 @@ def get_google_type(domain, device_class):
 class GoogleEntity:
     """Adaptation of Entity expressed in Google's terms."""
 
-    def __init__(self, hass: HomeAssistant, config: AbstractConfig, state: State):
+    def __init__(
+        self, hass: HomeAssistant, config: AbstractConfig, state: State
+    ) -> None:
         """Initialize a Google entity."""
         self.hass = hass
         self.config = config
@@ -390,7 +410,8 @@ class GoogleEntity:
 
         state = self.state
         domain = state.domain
-        features = state.attributes.get(ATTR_SUPPORTED_FEATURES, 0)
+        attributes = state.attributes
+        features = attributes.get(ATTR_SUPPORTED_FEATURES, 0)
 
         if not isinstance(features, int):
             _LOGGER.warning(
@@ -405,7 +426,7 @@ class GoogleEntity:
         self._traits = [
             Trait(self.hass, state, self.config)
             for Trait in trait.TRAITS
-            if Trait.supported(domain, features, device_class)
+            if Trait.supported(domain, features, device_class, attributes)
         ]
         return self._traits
 

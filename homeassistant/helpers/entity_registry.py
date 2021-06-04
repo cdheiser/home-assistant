@@ -10,8 +10,9 @@ timer.
 from __future__ import annotations
 
 from collections import OrderedDict
+from collections.abc import Iterable, Mapping
 import logging
-from typing import TYPE_CHECKING, Any, Callable, Iterable, cast
+from typing import TYPE_CHECKING, Any, Callable, cast
 
 import attr
 
@@ -23,16 +24,25 @@ from homeassistant.const import (
     ATTR_SUPPORTED_FEATURES,
     ATTR_UNIT_OF_MEASUREMENT,
     EVENT_HOMEASSISTANT_START,
+    MAX_LENGTH_STATE_DOMAIN,
+    MAX_LENGTH_STATE_ENTITY_ID,
     STATE_UNAVAILABLE,
 )
-from homeassistant.core import Event, callback, split_entity_id, valid_entity_id
+from homeassistant.core import (
+    Event,
+    HomeAssistant,
+    callback,
+    split_entity_id,
+    valid_entity_id,
+)
+from homeassistant.exceptions import MaxLengthExceeded
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.device_registry import EVENT_DEVICE_REGISTRY_UPDATED
 from homeassistant.loader import bind_hass
 from homeassistant.util import slugify
 from homeassistant.util.yaml import load_yaml
 
-from .typing import UNDEFINED, HomeAssistantType, UndefinedType
+from .typing import UNDEFINED, UndefinedType
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
@@ -89,7 +99,7 @@ class RegistryEntry:
             )
         ),
     )
-    capabilities: dict[str, Any] | None = attr.ib(default=None)
+    capabilities: Mapping[str, Any] | None = attr.ib(default=None)
     supported_features: int = attr.ib(default=0)
     device_class: str | None = attr.ib(default=None)
     unit_of_measurement: str | None = attr.ib(default=None)
@@ -109,7 +119,7 @@ class RegistryEntry:
         return self.disabled_by is not None
 
     @callback
-    def write_unavailable_state(self, hass: HomeAssistantType) -> None:
+    def write_unavailable_state(self, hass: HomeAssistant) -> None:
         """Write the unavailable state to the state machine."""
         attrs: dict[str, Any] = {ATTR_RESTORED: True}
 
@@ -139,7 +149,7 @@ class RegistryEntry:
 class EntityRegistry:
     """Class to hold a registry of entities."""
 
-    def __init__(self, hass: HomeAssistantType):
+    def __init__(self, hass: HomeAssistant) -> None:
         """Initialize the registry."""
         self.hass = hass
         self.entities: dict[str, RegistryEntry]
@@ -194,6 +204,10 @@ class EntityRegistry:
         Conflicts checked against registered and currently existing entities.
         """
         preferred_string = f"{domain}.{slugify(suggested_object_id)}"
+
+        if len(domain) > MAX_LENGTH_STATE_DOMAIN:
+            raise MaxLengthExceeded(domain, "domain", MAX_LENGTH_STATE_DOMAIN)
+
         test_string = preferred_string
         if not known_object_ids:
             known_object_ids = {}
@@ -206,6 +220,11 @@ class EntityRegistry:
         ):
             tries += 1
             test_string = f"{preferred_string}_{tries}"
+
+        if len(test_string) > MAX_LENGTH_STATE_ENTITY_ID:
+            raise MaxLengthExceeded(
+                test_string, "generated_entity_id", MAX_LENGTH_STATE_ENTITY_ID
+            )
 
         return test_string
 
@@ -222,10 +241,10 @@ class EntityRegistry:
         # To disable an entity if it gets created
         disabled_by: str | None = None,
         # Data that we want entry to have
-        config_entry: "ConfigEntry" | None = None,
+        config_entry: ConfigEntry | None = None,
         device_id: str | None = None,
         area_id: str | None = None,
-        capabilities: dict[str, Any] | None = None,
+        capabilities: Mapping[str, Any] | None = None,
         supported_features: int | None = None,
         device_class: str | None = None,
         unit_of_measurement: str | None = None,
@@ -267,7 +286,7 @@ class EntityRegistry:
         if (
             disabled_by is None
             and config_entry
-            and config_entry.system_options.disable_new_entities
+            and config_entry.pref_disable_new_entities
         ):
             disabled_by = DISABLED_INTEGRATION
 
@@ -385,7 +404,7 @@ class EntityRegistry:
         area_id: str | None | UndefinedType = UNDEFINED,
         new_unique_id: str | UndefinedType = UNDEFINED,
         disabled_by: str | None | UndefinedType = UNDEFINED,
-        capabilities: dict[str, Any] | None | UndefinedType = UNDEFINED,
+        capabilities: Mapping[str, Any] | None | UndefinedType = UNDEFINED,
         supported_features: int | UndefinedType = UNDEFINED,
         device_class: str | None | UndefinedType = UNDEFINED,
         unit_of_measurement: str | None | UndefinedType = UNDEFINED,
@@ -572,12 +591,12 @@ class EntityRegistry:
 
 
 @callback
-def async_get(hass: HomeAssistantType) -> EntityRegistry:
+def async_get(hass: HomeAssistant) -> EntityRegistry:
     """Get entity registry."""
     return cast(EntityRegistry, hass.data[DATA_REGISTRY])
 
 
-async def async_load(hass: HomeAssistantType) -> None:
+async def async_load(hass: HomeAssistant) -> None:
     """Load entity registry."""
     assert DATA_REGISTRY not in hass.data
     hass.data[DATA_REGISTRY] = EntityRegistry(hass)
@@ -585,7 +604,7 @@ async def async_load(hass: HomeAssistantType) -> None:
 
 
 @bind_hass
-async def async_get_registry(hass: HomeAssistantType) -> EntityRegistry:
+async def async_get_registry(hass: HomeAssistant) -> EntityRegistry:
     """Get entity registry.
 
     This is deprecated and will be removed in the future. Use async_get instead.
@@ -666,9 +685,7 @@ async def _async_migrate(entities: dict[str, Any]) -> dict[str, list[dict[str, A
 
 
 @callback
-def async_setup_entity_restore(
-    hass: HomeAssistantType, registry: EntityRegistry
-) -> None:
+def async_setup_entity_restore(hass: HomeAssistant, registry: EntityRegistry) -> None:
     """Set up the entity restore mechanism."""
 
     @callback
@@ -710,7 +727,7 @@ def async_setup_entity_restore(
 
 
 async def async_migrate_entries(
-    hass: HomeAssistantType,
+    hass: HomeAssistant,
     config_entry_id: str,
     entry_callback: Callable[[RegistryEntry], dict | None],
 ) -> None:

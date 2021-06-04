@@ -30,12 +30,24 @@ class ZWaveBaseEntity(Entity):
         self.config_entry = config_entry
         self.client = client
         self.info = info
-        self._name = self.generate_name()
-        self._unique_id = get_unique_id(
-            self.client.driver.controller.home_id, self.info.primary_value.value_id
-        )
         # entities requiring additional values, can add extra ids to this list
         self.watched_value_ids = {self.info.primary_value.value_id}
+
+        if self.info.additional_value_ids_to_watch:
+            self.watched_value_ids = self.watched_value_ids.union(
+                self.info.additional_value_ids_to_watch
+            )
+
+        # Entity class attributes
+        self._attr_name = self.generate_name()
+        self._attr_unique_id = get_unique_id(
+            self.client.driver.controller.home_id, self.info.primary_value.value_id
+        )
+        self._attr_assumed_state = self.info.assumed_state
+        # device is precreated in main handler
+        self._attr_device_info = {
+            "identifiers": {get_device_id(self.client, self.info.node)},
+        }
 
     @callback
     def on_value_update(self) -> None:
@@ -86,19 +98,12 @@ class ZWaveBaseEntity(Entity):
             )
         )
 
-    @property
-    def device_info(self) -> dict:
-        """Return device information for the device registry."""
-        # device is precreated in main handler
-        return {
-            "identifiers": {get_device_id(self.client, self.info.node)},
-        }
-
     def generate_name(
         self,
         include_value_name: bool = False,
         alternate_value_name: str | None = None,
         additional_info: list[str] | None = None,
+        name_suffix: str | None = None,
     ) -> str:
         """Generate entity name."""
         if additional_info is None:
@@ -108,6 +113,8 @@ class ZWaveBaseEntity(Entity):
             or self.info.node.device_config.description
             or f"Node {self.info.node.node_id}"
         )
+        if name_suffix:
+            name = f"{name} {name_suffix}"
         if include_value_name:
             value_name = (
                 alternate_value_name
@@ -124,16 +131,6 @@ class ZWaveBaseEntity(Entity):
             name += f" ({self.info.primary_value.endpoint})"
 
         return name
-
-    @property
-    def name(self) -> str:
-        """Return default name from device name and value name combination."""
-        return self._name
-
-    @property
-    def unique_id(self) -> str:
-        """Return the unique_id of the entity."""
-        return self._unique_id
 
     @property
     def available(self) -> bool:

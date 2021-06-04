@@ -5,7 +5,7 @@ import asyncio
 import collections
 from collections import OrderedDict
 from contextlib import contextmanager
-from datetime import timedelta
+from datetime import datetime, timedelta
 import functools as ft
 from io import StringIO
 import json
@@ -44,7 +44,7 @@ from homeassistant.const import (
     STATE_OFF,
     STATE_ON,
 )
-from homeassistant.core import BLOCK_LOG_TIMEOUT, State
+from homeassistant.core import BLOCK_LOG_TIMEOUT, HomeAssistant, State
 from homeassistant.helpers import (
     area_registry,
     device_registry,
@@ -270,7 +270,7 @@ async def async_test_home_assistant(loop, load_registries=True):
     hass.config.latitude = 32.87336
     hass.config.longitude = -117.22743
     hass.config.elevation = 0
-    hass.config.time_zone = date_util.get_time_zone("US/Pacific")
+    hass.config.time_zone = "US/Pacific"
     hass.config.units = METRIC_SYSTEM
     hass.config.media_dirs = {"local": get_test_config_dir("media")}
     hass.config.skip_pip = True
@@ -361,7 +361,9 @@ fire_mqtt_message = threadsafe_callback_factory(async_fire_mqtt_message)
 
 
 @ha.callback
-def async_fire_time_changed(hass, datetime_, fire_all=False):
+def async_fire_time_changed(
+    hass: HomeAssistant, datetime_: datetime, fire_all: bool = False
+) -> None:
     """Fire a time changes event."""
     hass.bus.async_fire(EVENT_TIME_CHANGED, {"now": date_util.as_utc(datetime_)})
 
@@ -566,7 +568,7 @@ class MockModule:
         if platform_schema_base is not None:
             self.PLATFORM_SCHEMA_BASE = platform_schema_base
 
-        if setup is not None:
+        if setup:
             # We run this in executor, wrap it in function
             self.setup = lambda *args: setup(*args)
 
@@ -730,21 +732,22 @@ class MockConfigEntry(config_entries.ConfigEntry):
         title="Mock Title",
         state=None,
         options={},
-        system_options={},
-        connection_class=config_entries.CONN_CLASS_UNKNOWN,
+        pref_disable_new_entities=None,
+        pref_disable_polling=None,
         unique_id=None,
         disabled_by=None,
+        reason=None,
     ):
         """Initialize a mock config entry."""
         kwargs = {
             "entry_id": entry_id or uuid_util.random_uuid_hex(),
             "domain": domain,
             "data": data or {},
-            "system_options": system_options,
+            "pref_disable_new_entities": pref_disable_new_entities,
+            "pref_disable_polling": pref_disable_polling,
             "options": options,
             "version": version,
             "title": title,
-            "connection_class": connection_class,
             "unique_id": unique_id,
             "disabled_by": disabled_by,
         }
@@ -753,6 +756,8 @@ class MockConfigEntry(config_entries.ConfigEntry):
         if state is not None:
             kwargs["state"] = state
         super().__init__(**kwargs)
+        if reason is not None:
+            self.reason = reason
 
     def add_to_hass(self, hass):
         """Test helper to add entry to hass."""
@@ -1046,10 +1051,15 @@ async def get_system_health_info(hass, domain):
     return await hass.data["system_health"][domain].info_callback(hass)
 
 
-def mock_integration(hass, module):
+def mock_integration(hass, module, built_in=True):
     """Mock an integration."""
     integration = loader.Integration(
-        hass, f"homeassistant.components.{module.DOMAIN}", None, module.mock_manifest()
+        hass,
+        f"{loader.PACKAGE_BUILTIN}.{module.DOMAIN}"
+        if built_in
+        else f"{loader.PACKAGE_CUSTOM_COMPONENTS}.{module.DOMAIN}",
+        None,
+        module.mock_manifest(),
     )
 
     def mock_import_platform(platform_name):

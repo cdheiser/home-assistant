@@ -112,9 +112,8 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for HomeKit."""
 
     VERSION = 1
-    CONNECTION_CLASS = config_entries.CONN_CLASS_LOCAL_PUSH
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize config flow."""
         self.hk_data = {}
 
@@ -223,7 +222,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Return a set of bridge names."""
         return {
             entry.data[CONF_NAME]
-            for entry in self._async_current_entries()
+            for entry in self._async_current_entries(include_ignore=False)
             if CONF_NAME in entry.data
         }
 
@@ -251,7 +250,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         port = user_input[CONF_PORT]
         return not any(
             entry.data[CONF_NAME] == name or entry.data[CONF_PORT] == port
-            for entry in self._async_current_entries()
+            for entry in self._async_current_entries(include_ignore=False)
         )
 
     @staticmethod
@@ -264,7 +263,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 class OptionsFlowHandler(config_entries.OptionsFlow):
     """Handle a option flow for homekit."""
 
-    def __init__(self, config_entry: config_entries.ConfigEntry):
+    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
         """Initialize options flow."""
         self.config_entry = config_entry
         self.hk_options = {}

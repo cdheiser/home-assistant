@@ -3,10 +3,9 @@ import logging
 
 from yalexs.activity import ActivityType
 
-from homeassistant.components.sensor import DEVICE_CLASS_BATTERY
+from homeassistant.components.sensor import DEVICE_CLASS_BATTERY, SensorEntity
 from homeassistant.const import ATTR_ENTITY_PICTURE, PERCENTAGE, STATE_UNAVAILABLE
 from homeassistant.core import callback
-from homeassistant.helpers.entity import Entity
 from homeassistant.helpers.entity_registry import async_get_registry
 from homeassistant.helpers.restore_state import RestoreEntity
 
@@ -46,7 +45,7 @@ SENSOR_TYPES_BATTERY = {
 async def async_setup_entry(hass, config_entry, async_add_entities):
     """Set up the August sensors."""
     data = hass.data[DOMAIN][config_entry.entry_id][DATA_AUGUST]
-    devices = []
+    entities = []
     migrate_unique_id_devices = []
     operation_sensors = []
     batteries = {
@@ -73,7 +72,7 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
             "Adding battery sensor for %s",
             device.device_name,
         )
-        devices.append(AugustBatterySensor(data, "device_battery", device, device))
+        entities.append(AugustBatterySensor(data, "device_battery", device, device))
 
     for device in batteries["linked_keypad_battery"]:
         detail = data.get_device_detail(device.device_id)
@@ -91,15 +90,15 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
         keypad_battery_sensor = AugustBatterySensor(
             data, "linked_keypad_battery", detail.keypad, device
         )
-        devices.append(keypad_battery_sensor)
+        entities.append(keypad_battery_sensor)
         migrate_unique_id_devices.append(keypad_battery_sensor)
 
     for device in operation_sensors:
-        devices.append(AugustOperatorSensor(data, device))
+        entities.append(AugustOperatorSensor(data, device))
 
     await _async_migrate_old_unique_ids(hass, migrate_unique_id_devices)
 
-    async_add_entities(devices, True)
+    async_add_entities(entities)
 
 
 async def _async_migrate_old_unique_ids(hass, devices):
@@ -118,7 +117,7 @@ async def _async_migrate_old_unique_ids(hass, devices):
             registry.async_update_entity(old_entity_id, new_unique_id=device.unique_id)
 
 
-class AugustOperatorSensor(AugustEntityMixin, RestoreEntity, Entity):
+class AugustOperatorSensor(AugustEntityMixin, RestoreEntity, SensorEntity):
     """Representation of an August lock operation sensor."""
 
     def __init__(self, data, device):
@@ -217,7 +216,7 @@ class AugustOperatorSensor(AugustEntityMixin, RestoreEntity, Entity):
         return f"{self._device_id}_lock_operator"
 
 
-class AugustBatterySensor(AugustEntityMixin, Entity):
+class AugustBatterySensor(AugustEntityMixin, SensorEntity):
     """Representation of an August sensor."""
 
     def __init__(self, data, sensor_type, device, old_device):

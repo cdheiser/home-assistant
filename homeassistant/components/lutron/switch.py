@@ -93,7 +93,7 @@ class LutronLed(LutronDevice, SwitchEntity):
     def extra_state_attributes(self):
         """Return the state attributes."""
         return {
-            "keypad": self._keypad_name,
+            "keypad": self._keypad.name,
             "scene": self._scene_name,
             "led": self._lutron_device.name,
         }

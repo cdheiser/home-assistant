@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 import datetime as dt
 import os
 
@@ -40,7 +41,7 @@ from .models import PTZ, Capabilities, DeviceInfo, Profile, Resolution, Video
 class ONVIFDevice:
     """Manages an ONVIF device."""
 
-    def __init__(self, hass: HomeAssistant, config_entry: ConfigEntry = None):
+    def __init__(self, hass: HomeAssistant, config_entry: ConfigEntry = None) -> None:
         """Initialize the device."""
         self.hass: HomeAssistant = hass
         self.config_entry: ConfigEntry = config_entry
@@ -103,8 +104,11 @@ class ONVIFDevice:
 
             # Fetch basic device info and capabilities
             self.info = await self.async_get_device_info()
+            LOGGER.debug("Camera %s info = %s", self.name, self.info)
             self.capabilities = await self.async_get_capabilities()
+            LOGGER.debug("Camera %s capabilities = %s", self.name, self.capabilities)
             self.profiles = await self.async_get_profiles()
+            LOGGER.debug("Camera %s profiles = %s", self.name, self.profiles)
 
             # No camera profiles to add
             if not self.profiles:
@@ -241,25 +245,19 @@ class ONVIFDevice:
     async def async_get_capabilities(self):
         """Obtain information about the available services on the device."""
         snapshot = False
-        try:
+        with suppress(ONVIFError, Fault, RequestError):
             media_service = self.device.create_media_service()
             media_capabilities = await media_service.GetServiceCapabilities()
             snapshot = media_capabilities and media_capabilities.SnapshotUri
-        except (ONVIFError, Fault, RequestError):
-            pass
 
         pullpoint = False
-        try:
+        with suppress(ONVIFError, Fault, RequestError):
             pullpoint = await self.events.async_start()
-        except (ONVIFError, Fault, RequestError):
-            pass
 
         ptz = False
-        try:
+        with suppress(ONVIFError, Fault, RequestError):
             self.device.get_definition("ptz")
             ptz = True
-        except (ONVIFError, Fault, RequestError):
-            pass
 
         return Capabilities(snapshot, pullpoint, ptz)
 
