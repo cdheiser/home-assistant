@@ -206,7 +206,7 @@ class LutronDevice(Entity):
         """Return the name of the device."""
         if self._include_areas:
             return self._lutron_device.name
-        return f"{self._suggested_area} {self._lutron_device.name}"
+        return f"{self._suggedted_area} {self._lutron_device.name}"
 
     @property
     def should_poll(self):
