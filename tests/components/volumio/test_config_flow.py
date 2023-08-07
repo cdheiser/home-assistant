@@ -2,8 +2,10 @@
 from unittest.mock import patch
 
 from homeassistant import config_entries
+from homeassistant.components import zeroconf
 from homeassistant.components.volumio.config_flow import CannotConnectError
 from homeassistant.components.volumio.const import DOMAIN
+from homeassistant.core import HomeAssistant
 
 from tests.common import MockConfigEntry
 
@@ -16,21 +18,25 @@ TEST_CONNECTION = {
 }
 
 
-TEST_DISCOVERY = {
-    "host": "1.1.1.1",
-    "port": 3000,
-    "properties": {"volumioName": "discovered", "UUID": "2222-2222-2222-2222"},
-}
+TEST_DISCOVERY = zeroconf.ZeroconfServiceInfo(
+    host="1.1.1.1",
+    addresses=["1.1.1.1"],
+    hostname="mock_hostname",
+    name="mock_name",
+    port=3000,
+    properties={"volumioName": "discovered", "UUID": "2222-2222-2222-2222"},
+    type="mock_type",
+)
 
 TEST_DISCOVERY_RESULT = {
-    "host": TEST_DISCOVERY["host"],
-    "port": TEST_DISCOVERY["port"],
-    "id": TEST_DISCOVERY["properties"]["UUID"],
-    "name": TEST_DISCOVERY["properties"]["volumioName"],
+    "host": TEST_DISCOVERY.host,
+    "port": TEST_DISCOVERY.port,
+    "id": TEST_DISCOVERY.properties["UUID"],
+    "name": TEST_DISCOVERY.properties["volumioName"],
 }
 
 
-async def test_form(hass):
+async def test_form(hass: HomeAssistant) -> None:
     """Test we get the form."""
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": config_entries.SOURCE_USER}
@@ -58,7 +64,7 @@ async def test_form(hass):
     assert len(mock_setup_entry.mock_calls) == 1
 
 
-async def test_form_updates_unique_id(hass):
+async def test_form_updates_unique_id(hass: HomeAssistant) -> None:
     """Test a duplicate id aborts and updates existing entry."""
     entry = MockConfigEntry(
         domain=DOMAIN,
@@ -95,7 +101,7 @@ async def test_form_updates_unique_id(hass):
     assert entry.data == {**TEST_SYSTEM_INFO, **TEST_CONNECTION}
 
 
-async def test_empty_system_info(hass):
+async def test_empty_system_info(hass: HomeAssistant) -> None:
     """Test old volumio versions with empty system info."""
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": config_entries.SOURCE_USER}
@@ -128,7 +134,7 @@ async def test_empty_system_info(hass):
     assert len(mock_setup_entry.mock_calls) == 1
 
 
-async def test_form_cannot_connect(hass):
+async def test_form_cannot_connect(hass: HomeAssistant) -> None:
     """Test we handle cannot connect error."""
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": config_entries.SOURCE_USER}
@@ -147,7 +153,7 @@ async def test_form_cannot_connect(hass):
     assert result2["errors"] == {"base": "cannot_connect"}
 
 
-async def test_form_exception(hass):
+async def test_form_exception(hass: HomeAssistant) -> None:
     """Test we handle generic error."""
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": config_entries.SOURCE_USER}
@@ -166,7 +172,7 @@ async def test_form_exception(hass):
     assert result2["errors"] == {"base": "unknown"}
 
 
-async def test_discovery(hass):
+async def test_discovery(hass: HomeAssistant) -> None:
     """Test discovery flow works."""
 
     result = await hass.config_entries.flow.async_init(
@@ -196,7 +202,7 @@ async def test_discovery(hass):
     assert len(mock_setup_entry.mock_calls) == 1
 
 
-async def test_discovery_cannot_connect(hass):
+async def test_discovery_cannot_connect(hass: HomeAssistant) -> None:
     """Test discovery aborts if cannot connect."""
 
     result = await hass.config_entries.flow.async_init(
@@ -216,7 +222,7 @@ async def test_discovery_cannot_connect(hass):
     assert result2["reason"] == "cannot_connect"
 
 
-async def test_discovery_duplicate_data(hass):
+async def test_discovery_duplicate_data(hass: HomeAssistant) -> None:
     """Test discovery aborts if same mDNS packet arrives."""
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": config_entries.SOURCE_ZEROCONF}, data=TEST_DISCOVERY
@@ -231,7 +237,7 @@ async def test_discovery_duplicate_data(hass):
     assert result["reason"] == "already_in_progress"
 
 
-async def test_discovery_updates_unique_id(hass):
+async def test_discovery_updates_unique_id(hass: HomeAssistant) -> None:
     """Test a duplicate discovery id aborts and updates existing entry."""
     entry = MockConfigEntry(
         domain=DOMAIN,

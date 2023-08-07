@@ -1,24 +1,24 @@
 """Offer API to configure the Home Assistant auth provider."""
+from typing import Any
+
 import voluptuous as vol
 
 from homeassistant.auth.providers import homeassistant as auth_ha
 from homeassistant.components import websocket_api
-from homeassistant.components.websocket_api import decorators
+from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import Unauthorized
 
 
 async def async_setup(hass):
     """Enable the Home Assistant views."""
-    hass.components.websocket_api.async_register_command(websocket_create)
-    hass.components.websocket_api.async_register_command(websocket_delete)
-    hass.components.websocket_api.async_register_command(websocket_change_password)
-    hass.components.websocket_api.async_register_command(
-        websocket_admin_change_password
-    )
+    websocket_api.async_register_command(hass, websocket_create)
+    websocket_api.async_register_command(hass, websocket_delete)
+    websocket_api.async_register_command(hass, websocket_change_password)
+    websocket_api.async_register_command(hass, websocket_admin_change_password)
     return True
 
 
-@decorators.websocket_command(
+@websocket_api.websocket_command(
     {
         vol.Required("type"): "config/auth_provider/homeassistant/create",
         vol.Required("user_id"): str,
@@ -28,12 +28,15 @@ async def async_setup(hass):
 )
 @websocket_api.require_admin
 @websocket_api.async_response
-async def websocket_create(hass, connection, msg):
+async def websocket_create(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
     """Create credentials and attach to a user."""
     provider = auth_ha.async_get_provider(hass)
-    user = await hass.auth.async_get_user(msg["user_id"])
 
-    if user is None:
+    if (user := await hass.auth.async_get_user(msg["user_id"])) is None:
         connection.send_error(msg["id"], "not_found", "User not found")
         return
 
@@ -59,7 +62,7 @@ async def websocket_create(hass, connection, msg):
     connection.send_result(msg["id"])
 
 
-@decorators.websocket_command(
+@websocket_api.websocket_command(
     {
         vol.Required("type"): "config/auth_provider/homeassistant/delete",
         vol.Required("username"): str,
@@ -67,7 +70,11 @@ async def websocket_create(hass, connection, msg):
 )
 @websocket_api.require_admin
 @websocket_api.async_response
-async def websocket_delete(hass, connection, msg):
+async def websocket_delete(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
     """Delete username and related credential."""
     provider = auth_ha.async_get_provider(hass)
     credentials = await provider.async_get_or_create_credentials(
@@ -93,7 +100,7 @@ async def websocket_delete(hass, connection, msg):
     connection.send_result(msg["id"])
 
 
-@decorators.websocket_command(
+@websocket_api.websocket_command(
     {
         vol.Required("type"): "config/auth_provider/homeassistant/change_password",
         vol.Required("current_password"): str,
@@ -101,10 +108,13 @@ async def websocket_delete(hass, connection, msg):
     }
 )
 @websocket_api.async_response
-async def websocket_change_password(hass, connection, msg):
+async def websocket_change_password(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
     """Change current user password."""
-    user = connection.user
-    if user is None:
+    if (user := connection.user) is None:
         connection.send_error(msg["id"], "user_not_found", "User not found")
         return
 
@@ -134,7 +144,7 @@ async def websocket_change_password(hass, connection, msg):
     connection.send_result(msg["id"])
 
 
-@decorators.websocket_command(
+@websocket_api.websocket_command(
     {
         vol.Required(
             "type"
@@ -143,16 +153,18 @@ async def websocket_change_password(hass, connection, msg):
         vol.Required("password"): str,
     }
 )
-@decorators.require_admin
-@decorators.async_response
-async def websocket_admin_change_password(hass, connection, msg):
+@websocket_api.require_admin
+@websocket_api.async_response
+async def websocket_admin_change_password(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
     """Change password of any user."""
     if not connection.user.is_owner:
         raise Unauthorized(context=connection.context(msg))
 
-    user = await hass.auth.async_get_user(msg["user_id"])
-
-    if user is None:
+    if (user := await hass.auth.async_get_user(msg["user_id"])) is None:
         connection.send_error(msg["id"], "user_not_found", "User not found")
         return
 

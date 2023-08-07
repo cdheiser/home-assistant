@@ -22,10 +22,12 @@ async def system_health_info(hass):
         "dev": info.get("dev"),
         "hassio": info.get("hassio"),
         "docker": info.get("docker"),
+        "user": info.get("user"),
         "virtualenv": info.get("virtualenv"),
         "python_version": info.get("python_version"),
         "os_name": info.get("os_name"),
         "os_version": info.get("os_version"),
         "arch": info.get("arch"),
         "timezone": info.get("timezone"),
+        "config_dir": hass.config.config_dir,
     }

@@ -1,19 +1,23 @@
 """Alexa related errors."""
+from __future__ import annotations
+
+from typing import Literal
+
 from homeassistant.exceptions import HomeAssistantError
 
 from .const import API_TEMP_UNITS
 
 
-class UnsupportedInterface(HomeAssistantError):
-    """This entity does not support the requested Smart Home API interface."""
-
-
 class UnsupportedProperty(HomeAssistantError):
-    """This entity does not support the requested Smart Home API property."""
+    """Does not support the requested Smart Home API property."""
 
 
 class NoTokenAvailable(HomeAssistantError):
     """There is no access token available."""
+
+
+class RequireRelink(Exception):
+    """The skill needs to be relinked."""
 
 
 class AlexaError(Exception):
@@ -22,8 +26,8 @@ class AlexaError(Exception):
     A handler can raise subclasses of this to return an error to the request.
     """
 
-    namespace = None
-    error_type = None
+    namespace: str | None = None
+    error_type: str | None = None
 
     def __init__(self, error_message, payload=None):
         """Initialize an alexa error."""
@@ -50,6 +54,30 @@ class AlexaInvalidValueError(AlexaError):
 
     namespace = "Alexa"
     error_type = "INVALID_VALUE"
+
+
+class AlexaInteralError(AlexaError):
+    """Class to represent internal errors."""
+
+    namespace = "Alexa"
+    error_type = "INTERNAL_ERROR"
+
+
+class AlexaNotSupportedInCurrentMode(AlexaError):
+    """The device is not in the correct mode to support this command."""
+
+    namespace = "Alexa"
+    error_type = "NOT_SUPPORTED_IN_CURRENT_MODE"
+
+    def __init__(
+        self,
+        endpoint_id: str,
+        current_mode: Literal["COLOR", "ASLEEP", "NOT_PROVISIONED", "OTHER"],
+    ) -> None:
+        """Initialize invalid endpoint error."""
+        msg = f"Not supported while in {current_mode} mode"
+        AlexaError.__init__(self, msg, {"currentDeviceMode": current_mode})
+        self.endpoint_id = endpoint_id
 
 
 class AlexaUnsupportedThermostatModeError(AlexaError):

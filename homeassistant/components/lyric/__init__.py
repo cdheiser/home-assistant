@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from http import HTTPStatus
 import logging
 
 from aiohttp.client_exceptions import ClientResponseError
@@ -10,10 +11,9 @@ from aiolyric.exceptions import LyricAuthenticationException, LyricException
 from aiolyric.objects.device import LyricDevice
 from aiolyric.objects.location import LyricLocation
 import async_timeout
-import voluptuous as vol
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_CLIENT_ID, CONF_CLIENT_SECRET
+from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers import (
@@ -29,49 +29,18 @@ from homeassistant.helpers.update_coordinator import (
     UpdateFailed,
 )
 
-from .api import ConfigEntryLyricClient, LyricLocalOAuth2Implementation
-from .config_flow import OAuth2FlowHandler
-from .const import DOMAIN, OAUTH2_AUTHORIZE, OAUTH2_TOKEN
-
-CONFIG_SCHEMA = vol.Schema(
-    {
-        DOMAIN: vol.Schema(
-            {
-                vol.Required(CONF_CLIENT_ID): cv.string,
-                vol.Required(CONF_CLIENT_SECRET): cv.string,
-            }
-        )
-    },
-    extra=vol.ALLOW_EXTRA,
+from .api import (
+    ConfigEntryLyricClient,
+    LyricLocalOAuth2Implementation,
+    OAuth2SessionLyric,
 )
+from .const import DOMAIN
+
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS = ["climate", "sensor"]
-
-
-async def async_setup(hass: HomeAssistant, config: dict):
-    """Set up the Honeywell Lyric component."""
-    hass.data[DOMAIN] = {}
-
-    if DOMAIN not in config:
-        return True
-
-    hass.data[DOMAIN][CONF_CLIENT_ID] = config[DOMAIN][CONF_CLIENT_ID]
-
-    OAuth2FlowHandler.async_register_implementation(
-        hass,
-        LyricLocalOAuth2Implementation(
-            hass,
-            DOMAIN,
-            config[DOMAIN][CONF_CLIENT_ID],
-            config[DOMAIN][CONF_CLIENT_SECRET],
-            OAUTH2_AUTHORIZE,
-            OAUTH2_TOKEN,
-        ),
-    )
-
-    return True
+PLATFORMS = [Platform.CLIMATE, Platform.SENSOR]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -81,47 +50,63 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             hass, entry
         )
     )
+    if not isinstance(implementation, LyricLocalOAuth2Implementation):
+        raise TypeError("Unexpected auth implementation; can't find oauth client id")
 
     session = aiohttp_client.async_get_clientsession(hass)
-    oauth_session = config_entry_oauth2_flow.OAuth2Session(hass, entry, implementation)
+    oauth_session = OAuth2SessionLyric(hass, entry, implementation)
 
     client = ConfigEntryLyricClient(session, oauth_session)
 
-    client_id = hass.data[DOMAIN][CONF_CLIENT_ID]
+    client_id = implementation.client_id
     lyric = Lyric(client, client_id)
 
-    async def async_update_data() -> Lyric:
+    async def async_update_data(force_refresh_token: bool = False) -> Lyric:
         """Fetch data from Lyric."""
+        try:
+            if not force_refresh_token:
+                await oauth_session.async_ensure_token_valid()
+            else:
+                await oauth_session.force_refresh_token()
+        except ClientResponseError as exception:
+            if exception.status in (HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN):
+                raise ConfigEntryAuthFailed from exception
+            raise UpdateFailed(exception) from exception
+
         try:
             async with async_timeout.timeout(60):
                 await lyric.get_locations()
             return lyric
         except LyricAuthenticationException as exception:
+            # Attempt to refresh the token before failing.
+            # Honeywell appear to have issues keeping tokens saved.
+            _LOGGER.debug("Authentication failed. Attempting to refresh token")
+            if not force_refresh_token:
+                return await async_update_data(force_refresh_token=True)
             raise ConfigEntryAuthFailed from exception
         except (LyricException, ClientResponseError) as exception:
             raise UpdateFailed(exception) from exception
 
-    coordinator = DataUpdateCoordinator(
+    coordinator = DataUpdateCoordinator[Lyric](
         hass,
         _LOGGER,
         # Name of the data. For logging purposes.
         name="lyric_coordinator",
         update_method=async_update_data,
         # Polling interval. Will only be polled if there are subscribers.
-        update_interval=timedelta(seconds=120),
+        update_interval=timedelta(seconds=300),
     )
-
-    hass.data[DOMAIN][entry.entry_id] = coordinator
 
     # Fetch initial data so we have data when entities subscribe
     await coordinator.async_config_entry_first_refresh()
+    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
 
-    hass.config_entries.async_setup_platforms(entry, PLATFORMS)
+    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     return True
 
 
-async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry):
+async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:
@@ -130,43 +115,27 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry):
     return unload_ok
 
 
-class LyricEntity(CoordinatorEntity):
+class LyricEntity(CoordinatorEntity[DataUpdateCoordinator[Lyric]]):
     """Defines a base Honeywell Lyric entity."""
 
     def __init__(
         self,
-        coordinator: DataUpdateCoordinator,
+        coordinator: DataUpdateCoordinator[Lyric],
         location: LyricLocation,
         device: LyricDevice,
         key: str,
-        name: str,
-        icon: str | None,
     ) -> None:
         """Initialize the Honeywell Lyric entity."""
         super().__init__(coordinator)
         self._key = key
-        self._name = name
-        self._icon = icon
         self._location = location
         self._mac_id = device.macID
-        self._device_name = device.name
-        self._device_model = device.deviceModel
         self._update_thermostat = coordinator.data.update_thermostat
 
     @property
     def unique_id(self) -> str:
         """Return the unique ID for this entity."""
         return self._key
-
-    @property
-    def name(self) -> str:
-        """Return the name of the entity."""
-        return self._name
-
-    @property
-    def icon(self) -> str:
-        """Return the mdi icon of the entity."""
-        return self._icon
 
     @property
     def location(self) -> LyricLocation:
@@ -185,9 +154,9 @@ class LyricDeviceEntity(LyricEntity):
     @property
     def device_info(self) -> DeviceInfo:
         """Return device information about this Honeywell Lyric instance."""
-        return {
-            "connections": {(dr.CONNECTION_NETWORK_MAC, self._mac_id)},
-            "manufacturer": "Honeywell",
-            "model": self._device_model,
-            "name": self._device_name,
-        }
+        return DeviceInfo(
+            connections={(dr.CONNECTION_NETWORK_MAC, self._mac_id)},
+            manufacturer="Honeywell",
+            model=self.device.deviceModel,
+            name=self.device.name,
+        )

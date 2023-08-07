@@ -2,10 +2,14 @@
 from homeassistant import config_entries, data_entry_flow
 from homeassistant.components import ifttt
 from homeassistant.config import async_process_ha_core_config
-from homeassistant.core import callback
+from homeassistant.core import HomeAssistant, callback
+
+from tests.typing import ClientSessionGenerator
 
 
-async def test_config_flow_registers_webhook(hass, aiohttp_client):
+async def test_config_flow_registers_webhook(
+    hass: HomeAssistant, hass_client_no_auth: ClientSessionGenerator
+) -> None:
     """Test setting up IFTTT and sending webhook."""
     await async_process_ha_core_config(
         hass,
@@ -15,10 +19,10 @@ async def test_config_flow_registers_webhook(hass, aiohttp_client):
     result = await hass.config_entries.flow.async_init(
         "ifttt", context={"source": config_entries.SOURCE_USER}
     )
-    assert result["type"] == data_entry_flow.RESULT_TYPE_FORM, result
+    assert result["type"] == data_entry_flow.FlowResultType.FORM, result
 
     result = await hass.config_entries.flow.async_configure(result["flow_id"], {})
-    assert result["type"] == data_entry_flow.RESULT_TYPE_CREATE_ENTRY
+    assert result["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
     webhook_id = result["result"].data["webhook_id"]
 
     ifttt_events = []
@@ -30,7 +34,7 @@ async def test_config_flow_registers_webhook(hass, aiohttp_client):
 
     hass.bus.async_listen(ifttt.EVENT_RECEIVED, handle_event)
 
-    client = await aiohttp_client(hass.http.app)
+    client = await hass_client_no_auth()
     await client.post(f"/api/webhook/{webhook_id}", json={"hello": "ifttt"})
 
     assert len(ifttt_events) == 1

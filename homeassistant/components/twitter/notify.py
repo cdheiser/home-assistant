@@ -1,6 +1,9 @@
 """Twitter platform for notify component."""
+from __future__ import annotations
+
 from datetime import datetime, timedelta
 from functools import partial
+from http import HTTPStatus
 import json
 import logging
 import mimetypes
@@ -11,12 +14,15 @@ import voluptuous as vol
 
 from homeassistant.components.notify import (
     ATTR_DATA,
+    ATTR_TARGET,
     PLATFORM_SCHEMA,
     BaseNotificationService,
 )
-from homeassistant.const import CONF_ACCESS_TOKEN, CONF_USERNAME, HTTP_OK
+from homeassistant.const import CONF_ACCESS_TOKEN, CONF_USERNAME
+from homeassistant.core import HomeAssistant
 import homeassistant.helpers.config_validation as cv
 from homeassistant.helpers.event import async_track_point_in_time
+from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -37,7 +43,11 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
 )
 
 
-def get_service(hass, config, discovery_info=None):
+def get_service(
+    hass: HomeAssistant,
+    config: ConfigType,
+    discovery_info: DiscoveryInfoType | None = None,
+) -> TwitterNotificationService:
     """Get the Twitter notification service."""
     return TwitterNotificationService(
         hass,
@@ -62,7 +72,7 @@ class TwitterNotificationService(BaseNotificationService):
         username,
     ):
         """Initialize the service."""
-        self.user = username
+        self.default_user = username
         self.hass = hass
         self.api = TwitterAPI(
             consumer_key, consumer_secret, access_token_key, access_token_secret
@@ -71,6 +81,7 @@ class TwitterNotificationService(BaseNotificationService):
     def send_message(self, message="", **kwargs):
         """Tweet a message, optionally with media."""
         data = kwargs.get(ATTR_DATA)
+        targets = kwargs.get(ATTR_TARGET)
 
         media = None
         if data:
@@ -79,16 +90,20 @@ class TwitterNotificationService(BaseNotificationService):
                 _LOGGER.warning("'%s' is not a whitelisted directory", media)
                 return
 
-        callback = partial(self.send_message_callback, message)
+        if targets:
+            for target in targets:
+                callback = partial(self.send_message_callback, message, target)
+                self.upload_media_then_callback(callback, media)
+        else:
+            callback = partial(self.send_message_callback, message, self.default_user)
+            self.upload_media_then_callback(callback, media)
 
-        self.upload_media_then_callback(callback, media)
-
-    def send_message_callback(self, message, media_id=None):
+    def send_message_callback(self, message, user, media_id=None):
         """Tweet a message, optionally with media."""
-        if self.user:
-            user_resp = self.api.request("users/lookup", {"screen_name": self.user})
+        if user:
+            user_resp = self.api.request("users/lookup", {"screen_name": user})
             user_id = user_resp.json()[0]["id"]
-            if user_resp.status_code != HTTP_OK:
+            if user_resp.status_code != HTTPStatus.OK:
                 self.log_error_resp(user_resp)
             else:
                 _LOGGER.debug("Message posted: %s", user_resp.json())
@@ -108,7 +123,7 @@ class TwitterNotificationService(BaseNotificationService):
                 "statuses/update", {"status": message, "media_ids": media_id}
             )
 
-        if resp.status_code != HTTP_OK:
+        if resp.status_code != HTTPStatus.OK:
             self.log_error_resp(resp)
         else:
             _LOGGER.debug("Message posted: %s", resp.json())
@@ -171,7 +186,7 @@ class TwitterNotificationService(BaseNotificationService):
         while bytes_sent < total_bytes:
             chunk = file.read(4 * 1024 * 1024)
             resp = self.upload_media_append(chunk, media_id, segment_id)
-            if resp.status_code not in range(HTTP_OK, 299):
+            if not HTTPStatus.OK <= resp.status_code < HTTPStatus.MULTIPLE_CHOICES:
                 self.log_error_resp_append(resp)
                 return None
             segment_id = segment_id + 1
@@ -200,7 +215,7 @@ class TwitterNotificationService(BaseNotificationService):
             {"command": "STATUS", "media_id": media_id},
             method_override="GET",
         )
-        if resp.status_code != HTTP_OK:
+        if resp.status_code != HTTPStatus.OK:
             _LOGGER.error("Media processing error: %s", resp.json())
         processing_info = resp.json()["processing_info"]
 
@@ -242,7 +257,12 @@ class TwitterNotificationService(BaseNotificationService):
     def log_error_resp(resp):
         """Log error response."""
         obj = json.loads(resp.text)
-        error_message = obj["errors"]
+        if "errors" in obj:
+            error_message = obj["errors"]
+        elif "error" in obj:
+            error_message = obj["error"]
+        else:
+            error_message = resp.text
         _LOGGER.error("Error %s: %s", resp.status_code, error_message)
 
     @staticmethod

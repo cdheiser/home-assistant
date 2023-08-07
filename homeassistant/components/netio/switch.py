@@ -1,7 +1,10 @@
 """The Netio switch component."""
+from __future__ import annotations
+
 from collections import namedtuple
 from datetime import timedelta
 import logging
+from typing import Any
 
 from pynetio import Netio
 import voluptuous as vol
@@ -17,8 +20,10 @@ from homeassistant.const import (
     EVENT_HOMEASSISTANT_STOP,
     STATE_ON,
 )
-from homeassistant.core import callback
+from homeassistant.core import HomeAssistant, callback
 import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -29,8 +34,8 @@ CONF_OUTLETS = "outlets"
 
 DEFAULT_PORT = 1234
 DEFAULT_USERNAME = "admin"
-Device = namedtuple("device", ["netio", "entities"])
-DEVICES = {}
+Device = namedtuple("Device", ["netio", "entities"])
+DEVICES: dict[str, Device] = {}
 
 MIN_TIME_BETWEEN_SCANS = timedelta(seconds=10)
 
@@ -49,13 +54,18 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
 )
 
 
-def setup_platform(hass, config, add_entities, discovery_info=None):
+def setup_platform(
+    hass: HomeAssistant,
+    config: ConfigType,
+    add_entities: AddEntitiesCallback,
+    discovery_info: DiscoveryInfoType | None = None,
+) -> None:
     """Set up the Netio platform."""
 
-    host = config.get(CONF_HOST)
-    username = config.get(CONF_USERNAME)
-    password = config.get(CONF_PASSWORD)
-    port = config.get(CONF_PORT)
+    host = config[CONF_HOST]
+    username = config[CONF_USERNAME]
+    password = config[CONF_PASSWORD]
+    port = config[CONF_PORT]
 
     if not DEVICES:
         hass.http.register_view(NetioApiView)
@@ -74,7 +84,6 @@ def setup_platform(hass, config, add_entities, discovery_info=None):
     add_entities(DEVICES[host].entities)
 
     hass.bus.listen_once(EVENT_HOMEASSISTANT_STOP, dispose)
-    return True
 
 
 def dispose(event):
@@ -97,12 +106,12 @@ class NetioApiView(HomeAssistantView):
 
         for i in range(1, 5):
             out = "output%d" % i
-            states.append(data.get("%s_state" % out) == STATE_ON)
-            consumptions.append(float(data.get("%s_consumption" % out, 0)))
+            states.append(data.get(f"{out}_state") == STATE_ON)
+            consumptions.append(float(data.get(f"{out}_consumption", 0)))
             cumulated_consumptions.append(
-                float(data.get("%s_cumulatedConsumption" % out, 0)) / 1000
+                float(data.get(f"{out}_cumulatedConsumption", 0)) / 1000
             )
-            start_dates.append(data.get("%s_consumptionStart" % out, ""))
+            start_dates.append(data.get(f"{out}_consumptionStart", ""))
 
         _LOGGER.debug(
             "%s: %s, %s, %s since %s",
@@ -140,15 +149,15 @@ class NetioSwitch(SwitchEntity):
         return self._name
 
     @property
-    def available(self):
+    def available(self) -> bool:
         """Return true if entity is available."""
         return not hasattr(self, "telnet")
 
-    def turn_on(self, **kwargs):
+    def turn_on(self, **kwargs: Any) -> None:
         """Turn switch on."""
         self._set(True)
 
-    def turn_off(self, **kwargs):
+    def turn_off(self, **kwargs: Any) -> None:
         """Turn switch off."""
         self._set(False)
 
@@ -164,29 +173,6 @@ class NetioSwitch(SwitchEntity):
         """Return the switch's status."""
         return self.netio.states[int(self.outlet) - 1]
 
-    def update(self):
+    def update(self) -> None:
         """Update the state."""
         self.netio.update()
-
-    @property
-    def extra_state_attributes(self):
-        """Return optional state attributes."""
-        return {
-            ATTR_TOTAL_CONSUMPTION_KWH: self.cumulated_consumption_kwh,
-            ATTR_START_DATE: self.start_date.split("|")[0],
-        }
-
-    @property
-    def current_power_w(self):
-        """Return actual power."""
-        return self.netio.consumptions[int(self.outlet) - 1]
-
-    @property
-    def cumulated_consumption_kwh(self):
-        """Return the total enerygy consumption since start_date."""
-        return self.netio.cumulated_consumptions[int(self.outlet) - 1]
-
-    @property
-    def start_date(self):
-        """Point in time when the energy accumulation started."""
-        return self.netio.start_dates[int(self.outlet) - 1]

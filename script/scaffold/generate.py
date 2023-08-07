@@ -113,7 +113,6 @@ def _custom_tasks(template, info: Info) -> None:
     elif template == "config_flow":
         info.update_manifest(config_flow=True)
         info.update_strings(
-            title=info.name,
             config={
                 "step": {
                     "user": {
@@ -138,7 +137,6 @@ def _custom_tasks(template, info: Info) -> None:
     elif template == "config_flow_discovery":
         info.update_manifest(config_flow=True)
         info.update_strings(
-            title=info.name,
             config={
                 "step": {
                     "confirm": {
@@ -152,10 +150,31 @@ def _custom_tasks(template, info: Info) -> None:
             },
         )
 
-    elif template == "config_flow_oauth2":
-        info.update_manifest(config_flow=True, dependencies=["http"])
+    elif template == "config_flow_helper":
+        info.update_manifest(config_flow=True, integration_type="helper")
         info.update_strings(
-            title=info.name,
+            config={
+                "step": {
+                    "user": {
+                        "description": "New NEW_NAME Sensor",
+                        "data": {"entity_id": "Input sensor", "name": "Name"},
+                    },
+                },
+            },
+            options={
+                "step": {
+                    "init": {
+                        "data": {
+                            "entity_id": "[%key:component::NEW_DOMAIN::config::step::user::description%]"
+                        },
+                    },
+                },
+            },
+        )
+
+    elif template == "config_flow_oauth2":
+        info.update_manifest(config_flow=True, dependencies=["application_credentials"])
+        info.update_strings(
             config={
                 "step": {
                     "pick_implementation": {
@@ -169,6 +188,7 @@ def _custom_tasks(template, info: Info) -> None:
                     "missing_configuration": "[%key:common::config_flow::abort::oauth2_missing_configuration%]",
                     "authorize_url_timeout": "[%key:common::config_flow::abort::oauth2_authorize_url_timeout%]",
                     "no_url_available": "[%key:common::config_flow::abort::oauth2_no_url_available%]",
+                    "user_rejected_authorize": "[%key:common::config_flow::abort::oauth2_user_rejected_authorize%]",
                 },
                 "create_entry": {
                     "default": "[%key:common::config_flow::create_entry::authenticated%]"

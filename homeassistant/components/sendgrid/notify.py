@@ -1,4 +1,7 @@
 """SendGrid notification service."""
+from __future__ import annotations
+
+from http import HTTPStatus
 import logging
 
 from sendgrid import SendGridAPIClient
@@ -15,9 +18,10 @@ from homeassistant.const import (
     CONF_RECIPIENT,
     CONF_SENDER,
     CONTENT_TYPE_TEXT_PLAIN,
-    HTTP_ACCEPTED,
 )
+from homeassistant.core import HomeAssistant
 import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -36,7 +40,11 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
 )
 
 
-def get_service(hass, config, discovery_info=None):
+def get_service(
+    hass: HomeAssistant,
+    config: ConfigType,
+    discovery_info: DiscoveryInfoType | None = None,
+) -> SendgridNotificationService:
     """Get the SendGrid notification service."""
     return SendgridNotificationService(config)
 
@@ -66,5 +74,5 @@ class SendgridNotificationService(BaseNotificationService):
         }
 
         response = self._sg.client.mail.send.post(request_body=data)
-        if response.status_code != HTTP_ACCEPTED:
+        if response.status_code != HTTPStatus.ACCEPTED:
             _LOGGER.error("Unable to send notification")

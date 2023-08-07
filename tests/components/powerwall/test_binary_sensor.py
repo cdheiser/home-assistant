@@ -1,16 +1,16 @@
 """The binary sensor tests for the powerwall platform."""
-
 from unittest.mock import patch
 
 from homeassistant.components.powerwall.const import DOMAIN
 from homeassistant.const import CONF_IP_ADDRESS, STATE_ON
+from homeassistant.core import HomeAssistant
 
 from .mocks import _mock_powerwall_with_fixtures
 
 from tests.common import MockConfigEntry
 
 
-async def test_sensors(hass):
+async def test_sensors(hass: HomeAssistant) -> None:
     """Test creation of the binary sensors."""
 
     mock_powerwall = await _mock_powerwall_with_fixtures(hass)
@@ -25,6 +25,16 @@ async def test_sensors(hass):
     ):
         assert await hass.config_entries.async_setup(config_entry.entry_id)
         await hass.async_block_till_done()
+
+    state = hass.states.get("binary_sensor.grid_services_active")
+    assert state.state == STATE_ON
+    expected_attributes = {
+        "friendly_name": "Grid Services Active",
+        "device_class": "power",
+    }
+    # Only test for a subset of attributes in case
+    # HA changes the implementation and a new one appears
+    assert all(item in state.attributes.items() for item in expected_attributes.items())
 
     state = hass.states.get("binary_sensor.grid_status")
     assert state.state == STATE_ON

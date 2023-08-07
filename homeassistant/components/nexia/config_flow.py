@@ -1,15 +1,23 @@
 """Config flow for Nexia integration."""
+import asyncio
 import logging
 
-from nexia.const import BRAND_ASAIR, BRAND_NEXIA
+import aiohttp
+from nexia.const import BRAND_ASAIR, BRAND_NEXIA, BRAND_TRANE
 from nexia.home import NexiaHome
-from requests.exceptions import ConnectTimeout, HTTPError
 import voluptuous as vol
 
 from homeassistant import config_entries, core, exceptions
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .const import BRAND_ASAIR_NAME, BRAND_NEXIA_NAME, CONF_BRAND, DOMAIN
+from .const import (
+    BRAND_ASAIR_NAME,
+    BRAND_NEXIA_NAME,
+    BRAND_TRANE_NAME,
+    CONF_BRAND,
+    DOMAIN,
+)
 from .util import is_invalid_auth_code
 
 _LOGGER = logging.getLogger(__name__)
@@ -19,7 +27,11 @@ DATA_SCHEMA = vol.Schema(
         vol.Required(CONF_USERNAME): str,
         vol.Required(CONF_PASSWORD): str,
         vol.Required(CONF_BRAND, default=BRAND_NEXIA): vol.In(
-            {BRAND_NEXIA: BRAND_NEXIA_NAME, BRAND_ASAIR: BRAND_ASAIR_NAME}
+            {
+                BRAND_NEXIA: BRAND_NEXIA_NAME,
+                BRAND_ASAIR: BRAND_ASAIR_NAME,
+                BRAND_TRANE: BRAND_TRANE_NAME,
+            }
         ),
     }
 )
@@ -31,24 +43,26 @@ async def validate_input(hass: core.HomeAssistant, data):
     Data has the keys from DATA_SCHEMA with values provided by the user.
     """
 
-    state_file = hass.config.path(f"nexia_config_{data[CONF_USERNAME]}.conf")
+    state_file = hass.config.path(
+        f"{data[CONF_BRAND]}_config_{data[CONF_USERNAME]}.conf"
+    )
+    session = async_get_clientsession(hass)
+    nexia_home = NexiaHome(
+        session,
+        username=data[CONF_USERNAME],
+        password=data[CONF_PASSWORD],
+        brand=data[CONF_BRAND],
+        device_name=hass.config.location_name,
+        state_file=state_file,
+    )
     try:
-        nexia_home = NexiaHome(
-            username=data[CONF_USERNAME],
-            password=data[CONF_PASSWORD],
-            brand=data[CONF_BRAND],
-            auto_login=False,
-            auto_update=False,
-            device_name=hass.config.location_name,
-            state_file=state_file,
-        )
-        await hass.async_add_executor_job(nexia_home.login)
-    except ConnectTimeout as ex:
+        await nexia_home.login()
+    except asyncio.TimeoutError as ex:
         _LOGGER.error("Unable to connect to Nexia service: %s", ex)
         raise CannotConnect from ex
-    except HTTPError as http_ex:
+    except aiohttp.ClientResponseError as http_ex:
         _LOGGER.error("HTTP error from Nexia service: %s", http_ex)
-        if is_invalid_auth_code(http_ex.response.status_code):
+        if is_invalid_auth_code(http_ex.status):
             raise InvalidAuth from http_ex
         raise CannotConnect from http_ex
 

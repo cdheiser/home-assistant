@@ -1,4 +1,5 @@
 """Implement the auth feature from Hass.io for Add-ons."""
+from http import HTTPStatus
 from ipaddress import ip_address
 import logging
 import os
@@ -9,10 +10,8 @@ import voluptuous as vol
 
 from homeassistant.auth.models import User
 from homeassistant.auth.providers import homeassistant as auth_ha
-from homeassistant.components.http import HomeAssistantView
-from homeassistant.components.http.const import KEY_HASS_USER
+from homeassistant.components.http import KEY_HASS_USER, HomeAssistantView
 from homeassistant.components.http.data_validator import RequestDataValidator
-from homeassistant.const import HTTP_OK
 from homeassistant.core import HomeAssistant, callback
 import homeassistant.helpers.config_validation as cv
 
@@ -42,7 +41,8 @@ class HassIOBaseAuth(HomeAssistantView):
     def _check_access(self, request: web.Request):
         """Check if this call is from Supervisor."""
         # Check caller IP
-        hassio_ip = os.environ["HASSIO"].split(":")[0]
+        hassio_ip = os.environ["SUPERVISOR"].split(":")[0]
+        assert request.transport
         if ip_address(request.transport.get_extra_info("peername")[0]) != ip_address(
             hassio_ip
         ):
@@ -83,7 +83,7 @@ class HassIOAuth(HassIOBaseAuth):
         except auth_ha.InvalidAuth:
             raise HTTPNotFound() from None
 
-        return web.Response(status=HTTP_OK)
+        return web.Response(status=HTTPStatus.OK)
 
 
 class HassIOPasswordReset(HassIOBaseAuth):
@@ -113,4 +113,4 @@ class HassIOPasswordReset(HassIOBaseAuth):
         except auth_ha.InvalidUser as err:
             raise HTTPNotFound() from err
 
-        return web.Response(status=HTTP_OK)
+        return web.Response(status=HTTPStatus.OK)

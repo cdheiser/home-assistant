@@ -7,10 +7,11 @@ from pyvolumio import CannotConnectError, Volumio
 import voluptuous as vol
 
 from homeassistant import config_entries, exceptions
+from homeassistant.components import zeroconf
 from homeassistant.const import CONF_HOST, CONF_ID, CONF_NAME, CONF_PORT
 from homeassistant.core import callback
+from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
-from homeassistant.helpers.typing import DiscoveryInfoType
 
 from .const import DOMAIN
 
@@ -37,7 +38,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     VERSION = 1
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize flow."""
         self._host: str | None = None
         self._port: int | None = None
@@ -93,12 +94,14 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             step_id="user", data_schema=DATA_SCHEMA, errors=errors
         )
 
-    async def async_step_zeroconf(self, discovery_info: DiscoveryInfoType):
+    async def async_step_zeroconf(
+        self, discovery_info: zeroconf.ZeroconfServiceInfo
+    ) -> FlowResult:
         """Handle zeroconf discovery."""
-        self._host = discovery_info["host"]
-        self._port = int(discovery_info["port"])
-        self._name = discovery_info["properties"]["volumioName"]
-        self._uuid = discovery_info["properties"]["UUID"]
+        self._host = discovery_info.host
+        self._port = discovery_info.port
+        self._name = discovery_info.properties["volumioName"]
+        self._uuid = discovery_info.properties["UUID"]
 
         await self._set_uid_and_abort()
 

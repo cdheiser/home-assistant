@@ -2,96 +2,96 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable, Coroutine
+from functools import partial
+from typing import Any
 
 from aioesphomeapi import CameraInfo, CameraState
+from aiohttp import web
 
 from homeassistant.components import camera
 from homeassistant.components.camera import Camera
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers.dispatcher import async_dispatcher_connect
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from . import EsphomeBaseEntity, platform_async_setup_entry
+from .entity import (
+    EsphomeEntity,
+    platform_async_setup_entry,
+)
 
 
 async def async_setup_entry(
-    hass: HomeAssistant, entry: ConfigEntry, async_add_entities
+    hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
     """Set up esphome cameras based on a config entry."""
     await platform_async_setup_entry(
         hass,
         entry,
         async_add_entities,
-        component_key="camera",
         info_type=CameraInfo,
         entity_type=EsphomeCamera,
         state_type=CameraState,
     )
 
 
-class EsphomeCamera(Camera, EsphomeBaseEntity):
+class EsphomeCamera(Camera, EsphomeEntity[CameraInfo, CameraState]):
     """A camera implementation for ESPHome."""
 
-    def __init__(self, entry_id: str, component_key: str, key: int) -> None:
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
         """Initialize."""
         Camera.__init__(self)
-        EsphomeBaseEntity.__init__(self, entry_id, component_key, key)
-        self._image_cond = asyncio.Condition()
+        EsphomeEntity.__init__(self, *args, **kwargs)
+        self._loop = asyncio.get_running_loop()
+        self._image_futures: list[asyncio.Future[bool | None]] = []
 
-    @property
-    def _static_info(self) -> CameraInfo:
-        return super()._static_info
+    @callback
+    def _set_futures(self, result: bool) -> None:
+        """Set futures to done."""
+        for future in self._image_futures:
+            if not future.done():
+                future.set_result(result)
+        self._image_futures.clear()
 
-    @property
-    def _state(self) -> CameraState | None:
-        return super()._state
+    @callback
+    def _on_device_update(self) -> None:
+        """Handle device going available or unavailable."""
+        super()._on_device_update()
+        if not self.available:
+            self._set_futures(False)
 
-    async def async_added_to_hass(self) -> None:
-        """Register callbacks."""
-
-        await super().async_added_to_hass()
-
-        self.async_on_remove(
-            async_dispatcher_connect(
-                self.hass,
-                (
-                    f"esphome_{self._entry_id}"
-                    f"_update_{self._component_key}_{self._key}"
-                ),
-                self._on_state_update,
-            )
-        )
-
-    async def _on_state_update(self) -> None:
+    @callback
+    def _on_state_update(self) -> None:
         """Notify listeners of new image when update arrives."""
-        self.async_write_ha_state()
-        async with self._image_cond:
-            self._image_cond.notify_all()
+        super()._on_state_update()
+        self._set_futures(True)
 
-    async def async_camera_image(self) -> bytes | None:
+    async def async_camera_image(
+        self, width: int | None = None, height: int | None = None
+    ) -> bytes | None:
         """Return single camera image bytes."""
+        return await self._async_request_image(self._client.request_single_image)
+
+    async def _async_request_image(
+        self, request_method: Callable[[], Coroutine[Any, Any, None]]
+    ) -> bytes | None:
+        """Wait for an image to be available and return it."""
         if not self.available:
             return None
-        await self._client.request_single_image()
-        async with self._image_cond:
-            await self._image_cond.wait()
-            if not self.available:
-                return None
-            return self._state.image[:]
-
-    async def _async_camera_stream_image(self) -> bytes | None:
-        """Return a single camera image in a stream."""
-        if not self.available:
+        image_future = self._loop.create_future()
+        self._image_futures.append(image_future)
+        await request_method()
+        if not await image_future:
             return None
-        await self._client.request_image_stream()
-        async with self._image_cond:
-            await self._image_cond.wait()
-            if not self.available:
-                return None
-            return self._state.image[:]
+        return self._state.data
 
-    async def handle_async_mjpeg_stream(self, request):
+    async def handle_async_mjpeg_stream(
+        self, request: web.Request
+    ) -> web.StreamResponse:
         """Serve an HTTP MJPEG stream from the camera."""
+        stream_request = partial(
+            self._async_request_image, self._client.request_image_stream
+        )
         return await camera.async_get_still_stream(
-            request, self._async_camera_stream_image, camera.DEFAULT_CONTENT_TYPE, 0.0
+            request, stream_request, camera.DEFAULT_CONTENT_TYPE, 0.0
         )

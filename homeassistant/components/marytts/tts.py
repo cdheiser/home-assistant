@@ -1,4 +1,6 @@
 """Support for the MaryTTS service."""
+from __future__ import annotations
+
 from speak2mary import MaryTTS
 import voluptuous as vol
 
@@ -19,7 +21,7 @@ DEFAULT_PORT = 59125
 DEFAULT_LANG = "en_US"
 DEFAULT_VOICE = "cmu-slt-hsmm"
 DEFAULT_CODEC = "WAVE_FILE"
-DEFAULT_EFFECTS = {}
+DEFAULT_EFFECTS: dict[str, str] = {}
 
 MAP_MARYTTS_CODEC = {"WAVE_FILE": "wav", "AIFF_FILE": "aiff", "AU_FILE": "au"}
 
@@ -78,7 +80,7 @@ class MaryTTSProvider(Provider):
         """Return a list of supported options."""
         return SUPPORT_OPTIONS
 
-    def get_tts_audio(self, message, language, options=None):
+    def get_tts_audio(self, message, language, options):
         """Load TTS from MaryTTS."""
         effects = options[CONF_EFFECT]
 

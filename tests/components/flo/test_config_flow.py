@@ -1,18 +1,22 @@
 """Test the flo config flow."""
+from http import HTTPStatus
 import json
 import time
 from unittest.mock import patch
 
-from homeassistant import config_entries, setup
+from homeassistant import config_entries
 from homeassistant.components.flo.const import DOMAIN
 from homeassistant.const import CONTENT_TYPE_JSON
+from homeassistant.core import HomeAssistant
 
 from .common import TEST_EMAIL_ADDRESS, TEST_PASSWORD, TEST_TOKEN, TEST_USER_ID
 
+from tests.test_util.aiohttp import AiohttpClientMocker
 
-async def test_form(hass, aioclient_mock_fixture):
+
+async def test_form(hass: HomeAssistant, aioclient_mock_fixture) -> None:
     """Test we get the form."""
-    await setup.async_setup_component(hass, "persistent_notification", {})
+
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": config_entries.SOURCE_USER}
     )
@@ -27,13 +31,15 @@ async def test_form(hass, aioclient_mock_fixture):
         )
 
         assert result2["type"] == "create_entry"
-        assert result2["title"] == "Home"
+        assert result2["title"] == TEST_USER_ID
         assert result2["data"] == {"username": TEST_USER_ID, "password": TEST_PASSWORD}
         await hass.async_block_till_done()
         assert len(mock_setup_entry.mock_calls) == 1
 
 
-async def test_form_cannot_connect(hass, aioclient_mock):
+async def test_form_cannot_connect(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
     """Test we handle cannot connect error."""
     now = round(time.time())
     # Mocks a failed login response for flo.
@@ -51,7 +57,7 @@ async def test_form_cannot_connect(hass, aioclient_mock):
             }
         ),
         headers={"Content-Type": CONTENT_TYPE_JSON},
-        status=400,
+        status=HTTPStatus.BAD_REQUEST,
     )
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": config_entries.SOURCE_USER}

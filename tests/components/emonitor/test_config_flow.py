@@ -4,10 +4,11 @@ from unittest.mock import MagicMock, patch
 from aioemonitor.monitor import EmonitorNetwork, EmonitorStatus
 import aiohttp
 
-from homeassistant import config_entries, setup
-from homeassistant.components.dhcp import HOSTNAME, IP_ADDRESS, MAC_ADDRESS
+from homeassistant import config_entries
+from homeassistant.components import dhcp
 from homeassistant.components.emonitor.const import DOMAIN
 from homeassistant.const import CONF_HOST
+from homeassistant.core import HomeAssistant
 
 from tests.common import MockConfigEntry
 
@@ -18,9 +19,9 @@ def _mock_emonitor():
     )
 
 
-async def test_form(hass):
+async def test_form(hass: HomeAssistant) -> None:
     """Test we get the form."""
-    await setup.async_setup_component(hass, "persistent_notification", {})
+
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": config_entries.SOURCE_USER}
     )
@@ -50,7 +51,7 @@ async def test_form(hass):
     assert len(mock_setup_entry.mock_calls) == 1
 
 
-async def test_form_unknown_error(hass):
+async def test_form_unknown_error(hass: HomeAssistant) -> None:
     """Test we handle unknown error."""
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": config_entries.SOURCE_USER}
@@ -71,7 +72,7 @@ async def test_form_unknown_error(hass):
     assert result2["errors"] == {"base": "unknown"}
 
 
-async def test_form_cannot_connect(hass):
+async def test_form_cannot_connect(hass: HomeAssistant) -> None:
     """Test we handle cannot connect error."""
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": config_entries.SOURCE_USER}
@@ -92,9 +93,8 @@ async def test_form_cannot_connect(hass):
     assert result2["errors"] == {CONF_HOST: "cannot_connect"}
 
 
-async def test_dhcp_can_confirm(hass):
+async def test_dhcp_can_confirm(hass: HomeAssistant) -> None:
     """Test DHCP discovery flow can confirm right away."""
-    await setup.async_setup_component(hass, "persistent_notification", {})
 
     with patch(
         "homeassistant.components.emonitor.config_flow.Emonitor.async_get_status",
@@ -103,11 +103,11 @@ async def test_dhcp_can_confirm(hass):
         result = await hass.config_entries.flow.async_init(
             DOMAIN,
             context={"source": config_entries.SOURCE_DHCP},
-            data={
-                HOSTNAME: "emonitor",
-                IP_ADDRESS: "1.2.3.4",
-                MAC_ADDRESS: "aa:bb:cc:dd:ee:ff",
-            },
+            data=dhcp.DhcpServiceInfo(
+                hostname="emonitor",
+                ip="1.2.3.4",
+                macaddress="aa:bb:cc:dd:ee:ff",
+            ),
         )
         await hass.async_block_till_done()
 
@@ -136,9 +136,8 @@ async def test_dhcp_can_confirm(hass):
     assert len(mock_setup_entry.mock_calls) == 1
 
 
-async def test_dhcp_fails_to_connect(hass):
+async def test_dhcp_fails_to_connect(hass: HomeAssistant) -> None:
     """Test DHCP discovery flow that fails to connect."""
-    await setup.async_setup_component(hass, "persistent_notification", {})
 
     with patch(
         "homeassistant.components.emonitor.config_flow.Emonitor.async_get_status",
@@ -147,11 +146,11 @@ async def test_dhcp_fails_to_connect(hass):
         result = await hass.config_entries.flow.async_init(
             DOMAIN,
             context={"source": config_entries.SOURCE_DHCP},
-            data={
-                HOSTNAME: "emonitor",
-                IP_ADDRESS: "1.2.3.4",
-                MAC_ADDRESS: "aa:bb:cc:dd:ee:ff",
-            },
+            data=dhcp.DhcpServiceInfo(
+                hostname="emonitor",
+                ip="1.2.3.4",
+                macaddress="aa:bb:cc:dd:ee:ff",
+            ),
         )
         await hass.async_block_till_done()
 
@@ -159,9 +158,9 @@ async def test_dhcp_fails_to_connect(hass):
     assert result["step_id"] == "user"
 
 
-async def test_dhcp_already_exists(hass):
+async def test_dhcp_already_exists(hass: HomeAssistant) -> None:
     """Test DHCP discovery flow that fails to connect."""
-    await setup.async_setup_component(hass, "persistent_notification", {})
+
     entry = MockConfigEntry(
         domain=DOMAIN,
         data={CONF_HOST: "1.2.3.4"},
@@ -176,11 +175,11 @@ async def test_dhcp_already_exists(hass):
         result = await hass.config_entries.flow.async_init(
             DOMAIN,
             context={"source": config_entries.SOURCE_DHCP},
-            data={
-                HOSTNAME: "emonitor",
-                IP_ADDRESS: "1.2.3.4",
-                MAC_ADDRESS: "aa:bb:cc:dd:ee:ff",
-            },
+            data=dhcp.DhcpServiceInfo(
+                hostname="emonitor",
+                ip="1.2.3.4",
+                macaddress="aa:bb:cc:dd:ee:ff",
+            ),
         )
         await hass.async_block_till_done()
 
@@ -188,9 +187,9 @@ async def test_dhcp_already_exists(hass):
     assert result["reason"] == "already_configured"
 
 
-async def test_user_unique_id_already_exists(hass):
+async def test_user_unique_id_already_exists(hass: HomeAssistant) -> None:
     """Test creating an entry where the unique_id already exists."""
-    await setup.async_setup_component(hass, "persistent_notification", {})
+
     entry = MockConfigEntry(
         domain=DOMAIN,
         data={CONF_HOST: "1.2.3.4"},

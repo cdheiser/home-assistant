@@ -1,26 +1,25 @@
 """Constants for the BSB-Lan integration."""
+from __future__ import annotations
 
-DOMAIN = "bsblan"
+from datetime import timedelta
+import logging
+from typing import Final
 
-DATA_BSBLAN_CLIENT = "bsblan_client"
-DATA_BSBLAN_TIMER = "bsblan_timer"
-DATA_BSBLAN_UPDATED = "bsblan_updated"
+# Integration domain
+DOMAIN: Final = "bsblan"
 
-ATTR_IDENTIFIERS = "identifiers"
-ATTR_MODEL = "model"
-ATTR_MANUFACTURER = "manufacturer"
+LOGGER = logging.getLogger(__package__)
+SCAN_INTERVAL = timedelta(seconds=12)
 
-ATTR_TARGET_TEMPERATURE = "target_temperature"
-ATTR_INSIDE_TEMPERATURE = "inside_temperature"
-ATTR_OUTSIDE_TEMPERATURE = "outside_temperature"
+# Services
+DATA_BSBLAN_CLIENT: Final = "bsblan_client"
 
-ATTR_STATE_ON = "on"
-ATTR_STATE_OFF = "off"
+ATTR_TARGET_TEMPERATURE: Final = "target_temperature"
+ATTR_INSIDE_TEMPERATURE: Final = "inside_temperature"
+ATTR_OUTSIDE_TEMPERATURE: Final = "outside_temperature"
 
-CONF_DEVICE_IDENT = "device_identification"
-CONF_CONTROLLER_FAM = "controller_family"
-CONF_CONTROLLER_VARI = "controller_variant"
+CONF_PASSKEY: Final = "passkey"
 
-SENSOR_TYPE_TEMPERATURE = "temperature"
+CONF_DEVICE_IDENT: Final = "RVS21.831F/127"
 
-CONF_PASSKEY = "passkey"
+DEFAULT_PORT: Final = 80

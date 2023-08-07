@@ -1,5 +1,6 @@
 """Tests for the Withings component."""
 import datetime
+from http import HTTPStatus
 import re
 from typing import Any
 from unittest.mock import MagicMock
@@ -18,13 +19,11 @@ from homeassistant.components.withings.common import (
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.config_entry_oauth2_flow import AbstractOAuth2Implementation
 
+from .common import ComponentFactory, get_data_manager_by_user_id, new_profile_config
+
 from tests.common import MockConfigEntry
-from tests.components.withings.common import (
-    ComponentFactory,
-    get_data_manager_by_user_id,
-    new_profile_config,
-)
 from tests.test_util.aiohttp import AiohttpClientMocker
+from tests.typing import ClientSessionGenerator
 
 
 async def test_config_entry_withings_api(hass: HomeAssistant) -> None:
@@ -43,7 +42,7 @@ async def test_config_entry_withings_api(hass: HomeAssistant) -> None:
     with requests_mock.mock() as rqmck:
         rqmck.get(
             re.compile(".*"),
-            status_code=200,
+            status_code=HTTPStatus.OK,
             json={"status": 0, "body": {"message": "success"}},
         )
 
@@ -55,7 +54,7 @@ async def test_config_entry_withings_api(hass: HomeAssistant) -> None:
 
 
 @pytest.mark.parametrize(
-    ["user_id", "arg_user_id", "arg_appli", "expected_code"],
+    ("user_id", "arg_user_id", "arg_appli", "expected_code"),
     [
         [0, 0, NotifyAppli.WEIGHT.value, 0],  # Success
         [0, None, 1, 0],  # Success, we ignore the user_id.
@@ -69,12 +68,12 @@ async def test_config_entry_withings_api(hass: HomeAssistant) -> None:
 async def test_webhook_post(
     hass: HomeAssistant,
     component_factory: ComponentFactory,
-    aiohttp_client,
+    aiohttp_client: ClientSessionGenerator,
     user_id: int,
     arg_user_id: Any,
     arg_appli: Any,
     expected_code: int,
-    current_request_with_host,
+    current_request_with_host: None,
 ) -> None:
     """Test webhook callback."""
     person0 = new_profile_config("person0", user_id)
@@ -107,8 +106,8 @@ async def test_webhook_post(
 async def test_webhook_head(
     hass: HomeAssistant,
     component_factory: ComponentFactory,
-    aiohttp_client,
-    current_request_with_host,
+    aiohttp_client: ClientSessionGenerator,
+    current_request_with_host: None,
 ) -> None:
     """Test head method on webhook view."""
     person0 = new_profile_config("person0", 0)
@@ -119,14 +118,14 @@ async def test_webhook_head(
 
     client: TestClient = await aiohttp_client(hass.http.app)
     resp = await client.head(urlparse(data_manager.webhook_config.url).path)
-    assert resp.status == 200
+    assert resp.status == HTTPStatus.OK
 
 
 async def test_webhook_put(
     hass: HomeAssistant,
     component_factory: ComponentFactory,
-    aiohttp_client,
-    current_request_with_host,
+    aiohttp_client: ClientSessionGenerator,
+    current_request_with_host: None,
 ) -> None:
     """Test webhook callback."""
     person0 = new_profile_config("person0", 0)
@@ -141,7 +140,7 @@ async def test_webhook_put(
     # Wait for remaining tasks to complete.
     await hass.async_block_till_done()
 
-    assert resp.status == 200
+    assert resp.status == HTTPStatus.OK
     data = await resp.json()
     assert data
     assert data["code"] == 2
@@ -165,7 +164,6 @@ async def test_data_manager_webhook_subscription(
         WebhookConfig(id="1234", url="http://localhost/api/webhook/1234", enabled=True),
     )
 
-    # pylint: disable=protected-access
     data_manager._notify_subscribe_delay = datetime.timedelta(seconds=0)
     data_manager._notify_unsubscribe_delay = datetime.timedelta(seconds=0)
 
@@ -196,7 +194,7 @@ async def test_data_manager_webhook_subscription(
     aioclient_mock.request(
         "HEAD",
         data_manager.webhook_config.url,
-        status=200,
+        status=HTTPStatus.OK,
     )
 
     # Test subscribing
@@ -213,27 +211,21 @@ async def test_data_manager_webhook_subscription(
     api.notify_subscribe.assert_any_call(
         data_manager.webhook_config.url, NotifyAppli.SLEEP
     )
-    try:
+
+    with pytest.raises(AssertionError):
         api.notify_subscribe.assert_any_call(
             data_manager.webhook_config.url, NotifyAppli.USER
         )
-        assert False
-    except AssertionError:
-        pass
-    try:
+
+    with pytest.raises(AssertionError):
         api.notify_subscribe.assert_any_call(
             data_manager.webhook_config.url, NotifyAppli.BED_IN
         )
-        assert False
-    except AssertionError:
-        pass
-    try:
+
+    with pytest.raises(AssertionError):
         api.notify_subscribe.assert_any_call(
             data_manager.webhook_config.url, NotifyAppli.BED_OUT
         )
-        assert False
-    except AssertionError:
-        pass
 
     # Test unsubscribing.
     await data_manager.async_unsubscribe_webhook()

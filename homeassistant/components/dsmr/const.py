@@ -1,10 +1,17 @@
 """Constants for the DSMR integration."""
+from __future__ import annotations
+
+import logging
+
+from homeassistant.const import Platform
 
 DOMAIN = "dsmr"
 
-PLATFORMS = ["sensor"]
+LOGGER = logging.getLogger(__package__)
 
+PLATFORMS = [Platform.SENSOR]
 CONF_DSMR_VERSION = "dsmr_version"
+CONF_PROTOCOL = "protocol"
 CONF_RECONNECT_INTERVAL = "reconnect_interval"
 CONF_PRECISION = "precision"
 CONF_TIME_BETWEEN_UPDATE = "time_between_update"
@@ -18,13 +25,12 @@ DEFAULT_PRECISION = 3
 DEFAULT_RECONNECT_INTERVAL = 30
 DEFAULT_TIME_BETWEEN_UPDATE = 30
 
-DATA_LISTENER = "listener"
 DATA_TASK = "task"
 
-DEVICE_NAME_ENERGY = "Energy Meter"
+DEVICE_NAME_ELECTRICITY = "Electricity Meter"
 DEVICE_NAME_GAS = "Gas Meter"
 
-ICON_GAS = "mdi:fire"
-ICON_POWER = "mdi:flash"
-ICON_POWER_FAILURE = "mdi:flash-off"
-ICON_SWELL_SAG = "mdi:pulse"
+DSMR_VERSIONS = {"2.2", "4", "5", "5B", "5L", "5S", "Q3D"}
+
+DSMR_PROTOCOL = "dsmr_protocol"
+RFXTRX_DSMR_PROTOCOL = "rfxtrx_dsmr_protocol"

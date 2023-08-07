@@ -1,16 +1,18 @@
 """Support for Alexa skill auth."""
 import asyncio
 from datetime import timedelta
+from http import HTTPStatus
 import json
 import logging
 
 import aiohttp
 import async_timeout
 
-from homeassistant.const import CONF_CLIENT_ID, CONF_CLIENT_SECRET, HTTP_OK
+from homeassistant.const import CONF_CLIENT_ID, CONF_CLIENT_SECRET
 from homeassistant.core import callback
 from homeassistant.helpers import aiohttp_client
-from homeassistant.util import dt
+from homeassistant.helpers.storage import Store
+from homeassistant.util import dt as dt_util
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -36,7 +38,7 @@ class Auth:
         self.client_secret = client_secret
 
         self._prefs = None
-        self._store = hass.helpers.storage.Store(STORAGE_VERSION, STORAGE_KEY)
+        self._store = Store(hass, STORAGE_VERSION, STORAGE_KEY)
 
         self._get_token_lock = asyncio.Lock()
 
@@ -93,18 +95,17 @@ class Auth:
         if not self._prefs[STORAGE_ACCESS_TOKEN]:
             return False
 
-        expire_time = dt.parse_datetime(self._prefs[STORAGE_EXPIRE_TIME])
+        expire_time = dt_util.parse_datetime(self._prefs[STORAGE_EXPIRE_TIME])
         preemptive_expire_time = expire_time - timedelta(
             seconds=PREEMPTIVE_REFRESH_TTL_IN_SECONDS
         )
 
-        return dt.utcnow() < preemptive_expire_time
+        return dt_util.utcnow() < preemptive_expire_time
 
     async def _async_request_new_token(self, lwa_params):
-
         try:
             session = aiohttp_client.async_get_clientsession(self.hass)
-            with async_timeout.timeout(10):
+            async with async_timeout.timeout(10):
                 response = await session.post(
                     LWA_TOKEN_URI,
                     headers=LWA_HEADERS,
@@ -119,7 +120,7 @@ class Auth:
         _LOGGER.debug("LWA response header: %s", response.headers)
         _LOGGER.debug("LWA response status: %s", response.status)
 
-        if response.status != HTTP_OK:
+        if response.status != HTTPStatus.OK:
             _LOGGER.error("Error calling LWA to get auth token")
             return None
 
@@ -129,7 +130,7 @@ class Auth:
         access_token = response_json["access_token"]
         refresh_token = response_json["refresh_token"]
         expires_in = response_json["expires_in"]
-        expire_time = dt.utcnow() + timedelta(seconds=expires_in)
+        expire_time = dt_util.utcnow() + timedelta(seconds=expires_in)
 
         await self._async_update_preferences(
             access_token, refresh_token, expire_time.isoformat()

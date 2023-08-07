@@ -1,121 +1,85 @@
 """Home Assistant representation of an UPnP/IGD."""
 from __future__ import annotations
 
-import asyncio
-from collections.abc import Mapping
-from ipaddress import IPv4Address
+from datetime import datetime
+from functools import partial
+from ipaddress import ip_address
 from typing import Any
 from urllib.parse import urlparse
 
-from async_upnp_client import UpnpFactory
 from async_upnp_client.aiohttp import AiohttpSessionRequester
-from async_upnp_client.device_updater import DeviceUpdater
+from async_upnp_client.client_factory import UpnpFactory
 from async_upnp_client.profiles.igd import IgdDevice
+from getmac import get_mac_address
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
-import homeassistant.util.dt as dt_util
 
 from .const import (
     BYTES_RECEIVED,
     BYTES_SENT,
-    CONF_LOCAL_IP,
-    DISCOVERY_HOSTNAME,
-    DISCOVERY_LOCATION,
-    DISCOVERY_NAME,
-    DISCOVERY_ST,
-    DISCOVERY_UDN,
-    DISCOVERY_UNIQUE_ID,
-    DISCOVERY_USN,
-    DOMAIN,
-    DOMAIN_CONFIG,
+    KIBIBYTES_PER_SEC_RECEIVED,
+    KIBIBYTES_PER_SEC_SENT,
     LOGGER as _LOGGER,
+    PACKETS_PER_SEC_RECEIVED,
+    PACKETS_PER_SEC_SENT,
     PACKETS_RECEIVED,
     PACKETS_SENT,
+    ROUTER_IP,
+    ROUTER_UPTIME,
     TIMESTAMP,
+    WAN_STATUS,
 )
 
 
-def _get_local_ip(hass: HomeAssistant) -> IPv4Address | None:
-    """Get the configured local ip."""
-    if DOMAIN in hass.data and DOMAIN_CONFIG in hass.data[DOMAIN]:
-        local_ip = hass.data[DOMAIN][DOMAIN_CONFIG].get(CONF_LOCAL_IP)
-        if local_ip:
-            return IPv4Address(local_ip)
-    return None
+async def async_get_mac_address_from_host(hass: HomeAssistant, host: str) -> str | None:
+    """Get mac address from host."""
+    ip_addr = ip_address(host)
+    if ip_addr.version == 4:
+        mac_address = await hass.async_add_executor_job(
+            partial(get_mac_address, ip=host)
+        )
+    else:
+        mac_address = await hass.async_add_executor_job(
+            partial(get_mac_address, ip6=host)
+        )
+    return mac_address
+
+
+async def async_create_device(hass: HomeAssistant, ssdp_location: str) -> Device:
+    """Create UPnP/IGD device."""
+    session = async_get_clientsession(hass, verify_ssl=False)
+    requester = AiohttpSessionRequester(session, with_sleep=True, timeout=20)
+
+    factory = UpnpFactory(requester, non_strict=True)
+    upnp_device = await factory.async_create_device(ssdp_location)
+
+    # Create profile wrapper.
+    igd_device = IgdDevice(upnp_device, None)
+    device = Device(hass, igd_device)
+
+    return device
 
 
 class Device:
     """Home Assistant representation of a UPnP/IGD device."""
 
-    def __init__(self, igd_device: IgdDevice, device_updater: DeviceUpdater) -> None:
+    def __init__(self, hass: HomeAssistant, igd_device: IgdDevice) -> None:
         """Initialize UPnP/IGD device."""
+        self.hass = hass
         self._igd_device = igd_device
-        self._device_updater = device_updater
-        self.coordinator: DataUpdateCoordinator = None
+        self.coordinator: DataUpdateCoordinator[
+            dict[str, str | datetime | int | float | None]
+        ] | None = None
+        self.original_udn: str | None = None
 
-    @classmethod
-    async def async_discover(cls, hass: HomeAssistant) -> list[Mapping]:
-        """Discover UPnP/IGD devices."""
-        _LOGGER.debug("Discovering UPnP/IGD devices")
-        local_ip = _get_local_ip(hass)
-        discoveries = await IgdDevice.async_search(source_ip=local_ip, timeout=10)
+    async def async_get_mac_address(self) -> str | None:
+        """Get mac address."""
+        if not self.host:
+            return None
 
-        # Supplement/standardize discovery.
-        for discovery in discoveries:
-            discovery[DISCOVERY_UDN] = discovery["_udn"]
-            discovery[DISCOVERY_ST] = discovery["st"]
-            discovery[DISCOVERY_LOCATION] = discovery["location"]
-            discovery[DISCOVERY_USN] = discovery["usn"]
-            _LOGGER.debug("Discovered device: %s", discovery)
-
-        return discoveries
-
-    @classmethod
-    async def async_supplement_discovery(
-        cls, hass: HomeAssistant, discovery: Mapping
-    ) -> Mapping:
-        """Get additional data from device and supplement discovery."""
-        location = discovery[DISCOVERY_LOCATION]
-        device = await Device.async_create_device(hass, location)
-        discovery[DISCOVERY_NAME] = device.name
-        discovery[DISCOVERY_HOSTNAME] = device.hostname
-        discovery[DISCOVERY_UNIQUE_ID] = discovery[DISCOVERY_USN]
-
-        return discovery
-
-    @classmethod
-    async def async_create_device(
-        cls, hass: HomeAssistant, ssdp_location: str
-    ) -> Device:
-        """Create UPnP/IGD device."""
-        # Build async_upnp_client requester.
-        session = async_get_clientsession(hass)
-        requester = AiohttpSessionRequester(session, True, 10)
-
-        # Create async_upnp_client device.
-        factory = UpnpFactory(requester, disable_state_variable_validation=True)
-        upnp_device = await factory.async_create_device(ssdp_location)
-
-        # Create profile wrapper.
-        igd_device = IgdDevice(upnp_device, None)
-
-        # Create updater.
-        local_ip = _get_local_ip(hass)
-        device_updater = DeviceUpdater(
-            device=upnp_device, factory=factory, source_ip=local_ip
-        )
-
-        return cls(igd_device, device_updater)
-
-    async def async_start(self) -> None:
-        """Start the device updater."""
-        await self._device_updater.async_start()
-
-    async def async_stop(self) -> None:
-        """Stop the device updater."""
-        await self._device_updater.async_stop()
+        return await async_get_mac_address_from_host(self.hass, self.host)
 
     @property
     def udn(self) -> str:
@@ -153,41 +117,55 @@ class Device:
         return self.usn
 
     @property
-    def hostname(self) -> str:
+    def host(self) -> str | None:
         """Get the hostname."""
         url = self._igd_device.device.device_url
         parsed = urlparse(url)
         return parsed.hostname
 
+    @property
+    def device_url(self) -> str:
+        """Get the device_url of the device."""
+        return self._igd_device.device.device_url
+
+    @property
+    def serial_number(self) -> str | None:
+        """Get the serial number."""
+        return self._igd_device.device.serial_number
+
     def __str__(self) -> str:
         """Get string representation."""
         return f"IGD Device: {self.name}/{self.udn}::{self.device_type}"
 
-    async def async_get_traffic_data(self) -> Mapping[str, Any]:
-        """
-        Get all traffic data in one go.
+    async def async_get_data(self) -> dict[str, str | datetime | int | float | None]:
+        """Get all data from device."""
+        _LOGGER.debug("Getting data for device: %s", self)
+        igd_state = await self._igd_device.async_get_traffic_and_status_data()
+        status_info = igd_state.status_info
+        if status_info is not None and not isinstance(status_info, Exception):
+            wan_status = status_info.connection_status
+            router_uptime = status_info.uptime
+        else:
+            wan_status = None
+            router_uptime = None
 
-        Traffic data consists of:
-        - total bytes sent
-        - total bytes received
-        - total packets sent
-        - total packats received
+        def get_value(value: Any) -> Any:
+            if value is None or isinstance(value, Exception):
+                return None
 
-        Data is timestamped.
-        """
-        _LOGGER.debug("Getting traffic statistics from device: %s", self)
-
-        values = await asyncio.gather(
-            self._igd_device.async_get_total_bytes_received(),
-            self._igd_device.async_get_total_bytes_sent(),
-            self._igd_device.async_get_total_packets_received(),
-            self._igd_device.async_get_total_packets_sent(),
-        )
+            return value
 
         return {
-            TIMESTAMP: dt_util.utcnow(),
-            BYTES_RECEIVED: values[0],
-            BYTES_SENT: values[1],
-            PACKETS_RECEIVED: values[2],
-            PACKETS_SENT: values[3],
+            TIMESTAMP: igd_state.timestamp,
+            BYTES_RECEIVED: get_value(igd_state.bytes_received),
+            BYTES_SENT: get_value(igd_state.bytes_sent),
+            PACKETS_RECEIVED: get_value(igd_state.packets_received),
+            PACKETS_SENT: get_value(igd_state.packets_sent),
+            WAN_STATUS: wan_status,
+            ROUTER_UPTIME: router_uptime,
+            ROUTER_IP: get_value(igd_state.external_ip_address),
+            KIBIBYTES_PER_SEC_RECEIVED: igd_state.kibibytes_per_sec_received,
+            KIBIBYTES_PER_SEC_SENT: igd_state.kibibytes_per_sec_sent,
+            PACKETS_PER_SEC_RECEIVED: igd_state.packets_per_sec_received,
+            PACKETS_PER_SEC_SENT: igd_state.packets_per_sec_sent,
         }

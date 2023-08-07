@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import logging
 
-from zwave_js_server.client import Client as ZwaveClient
+from zwave_js_server.model.driver import Driver
 from zwave_js_server.model.value import Value as ZwaveValue
 
 from homeassistant.const import STATE_UNAVAILABLE
@@ -34,11 +34,10 @@ class ValueID:
 
     @staticmethod
     def from_unique_id(unique_id: str) -> ValueID:
-        """
-        Get a ValueID from a unique ID.
+        """Get a ValueID from a unique ID.
 
-        This also works for Notification CC Binary Sensors which have their own unique ID
-        format.
+        This also works for Notification CC Binary Sensors which have their
+        own unique ID format.
         """
         return ValueID.from_string_id(unique_id.split(".")[1])
 
@@ -84,7 +83,11 @@ def async_migrate_old_entity(
         if entry.domain != platform or entry.unique_id in registered_unique_ids:
             continue
 
-        old_ent_value_id = ValueID.from_unique_id(entry.unique_id)
+        try:
+            old_ent_value_id = ValueID.from_unique_id(entry.unique_id)
+        # Skip non value ID based unique ID's (e.g. node status sensor)
+        except IndexError:
+            continue
 
         if value_id.is_same_value_different_endpoints(old_ent_value_id):
             existing_entity_entries.append(entry)
@@ -134,15 +137,12 @@ def async_migrate_discovered_value(
     ent_reg: EntityRegistry,
     registered_unique_ids: set[str],
     device: DeviceEntry,
-    client: ZwaveClient,
+    driver: Driver,
     disc_info: ZwaveDiscoveryInfo,
 ) -> None:
     """Migrate unique ID for entity/entities tied to discovered value."""
 
-    new_unique_id = get_unique_id(
-        client.driver.controller.home_id,
-        disc_info.primary_value.value_id,
-    )
+    new_unique_id = get_unique_id(driver, disc_info.primary_value.value_id)
 
     # On reinterviews, there is no point in going through this logic again for already
     # discovered values
@@ -154,10 +154,7 @@ def async_migrate_discovered_value(
 
     # 2021.2.*, 2021.3.0b0, and 2021.3.0 formats
     old_unique_ids = [
-        get_unique_id(
-            client.driver.controller.home_id,
-            value_id,
-        )
+        get_unique_id(driver, value_id)
         for value_id in get_old_value_ids(disc_info.primary_value)
     ]
 

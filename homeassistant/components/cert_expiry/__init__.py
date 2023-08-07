@@ -5,8 +5,13 @@ from datetime import datetime, timedelta
 import logging
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_HOST, CONF_PORT
+from homeassistant.const import (
+    CONF_HOST,
+    CONF_PORT,
+    Platform,
+)
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.start import async_at_started
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import DEFAULT_PORT, DOMAIN
@@ -17,7 +22,7 @@ _LOGGER = logging.getLogger(__name__)
 
 SCAN_INTERVAL = timedelta(hours=12)
 
-PLATFORMS = ["sensor"]
+PLATFORMS = [Platform.SENSOR]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -26,7 +31,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     port = entry.data[CONF_PORT]
 
     coordinator = CertExpiryDataUpdateCoordinator(hass, host, port)
-    await coordinator.async_config_entry_first_refresh()
 
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = coordinator
@@ -34,17 +38,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if entry.unique_id is None:
         hass.config_entries.async_update_entry(entry, unique_id=f"{host}:{port}")
 
-    hass.config_entries.async_setup_platforms(entry, PLATFORMS)
+    async def _async_finish_startup(_):
+        await coordinator.async_refresh()
+        await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
+    async_at_started(hass, _async_finish_startup)
     return True
 
 
-async def async_unload_entry(hass, entry):
+async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
 
-class CertExpiryDataUpdateCoordinator(DataUpdateCoordinator[datetime]):
+class CertExpiryDataUpdateCoordinator(DataUpdateCoordinator[datetime | None]):
     """Class to manage fetching Cert Expiry data from single endpoint."""
 
     def __init__(self, hass, host, port):
@@ -58,10 +65,7 @@ class CertExpiryDataUpdateCoordinator(DataUpdateCoordinator[datetime]):
         name = f"{self.host}{display_port}"
 
         super().__init__(
-            hass,
-            _LOGGER,
-            name=name,
-            update_interval=SCAN_INTERVAL,
+            hass, _LOGGER, name=name, update_interval=SCAN_INTERVAL, always_update=False
         )
 
     async def _async_update_data(self) -> datetime | None:

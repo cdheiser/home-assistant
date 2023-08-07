@@ -6,6 +6,7 @@ import pytest
 import homeassistant.components.media_player as mp
 from homeassistant.components.yamaha import media_player as yamaha
 from homeassistant.components.yamaha.const import DOMAIN
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers.discovery import async_load_platform
 from homeassistant.setup import async_setup_component
 
@@ -47,7 +48,7 @@ def device_fixture(main_zone):
         yield device
 
 
-async def test_setup_host(hass, device, main_zone):
+async def test_setup_host(hass: HomeAssistant, device, main_zone) -> None:
     """Test set up integration with host."""
     assert await async_setup_component(hass, mp.DOMAIN, CONFIG)
     await hass.async_block_till_done()
@@ -58,7 +59,7 @@ async def test_setup_host(hass, device, main_zone):
     assert state.state == "off"
 
 
-async def test_setup_no_host(hass, device, main_zone):
+async def test_setup_no_host(hass: HomeAssistant, device, main_zone) -> None:
     """Test set up integration without host."""
     with patch("rxv.find", return_value=[device]):
         assert await async_setup_component(
@@ -72,7 +73,7 @@ async def test_setup_no_host(hass, device, main_zone):
     assert state.state == "off"
 
 
-async def test_setup_discovery(hass, device, main_zone):
+async def test_setup_discovery(hass: HomeAssistant, device, main_zone) -> None:
     """Test set up integration via discovery."""
     discovery_info = {
         "name": "Yamaha Receiver",
@@ -91,7 +92,7 @@ async def test_setup_discovery(hass, device, main_zone):
     assert state.state == "off"
 
 
-async def test_setup_zone_ignore(hass, device, main_zone):
+async def test_setup_zone_ignore(hass: HomeAssistant, device, main_zone) -> None:
     """Test set up integration without host."""
     assert await async_setup_component(
         hass,
@@ -111,7 +112,7 @@ async def test_setup_zone_ignore(hass, device, main_zone):
     assert state is None
 
 
-async def test_enable_output(hass, device, main_zone):
+async def test_enable_output(hass: HomeAssistant, device, main_zone) -> None:
     """Test enable output service."""
     assert await async_setup_component(hass, mp.DOMAIN, CONFIG)
     await hass.async_block_till_done()
@@ -130,7 +131,35 @@ async def test_enable_output(hass, device, main_zone):
     assert main_zone.enable_output.call_args == call(port, enabled)
 
 
-async def test_select_scene(hass, device, main_zone, caplog):
+@pytest.mark.parametrize(
+    ("cursor", "method"),
+    [
+        (yamaha.CURSOR_TYPE_DOWN, "menu_down"),
+        (yamaha.CURSOR_TYPE_LEFT, "menu_left"),
+        (yamaha.CURSOR_TYPE_RETURN, "menu_return"),
+        (yamaha.CURSOR_TYPE_RIGHT, "menu_right"),
+        (yamaha.CURSOR_TYPE_SELECT, "menu_sel"),
+        (yamaha.CURSOR_TYPE_UP, "menu_up"),
+    ],
+)
+@pytest.mark.usefixtures("device")
+async def test_menu_cursor(hass: HomeAssistant, main_zone, cursor, method) -> None:
+    """Verify that the correct menu method is called for the menu_cursor service."""
+    assert await async_setup_component(hass, mp.DOMAIN, CONFIG)
+    await hass.async_block_till_done()
+
+    data = {
+        "entity_id": "media_player.yamaha_receiver_main_zone",
+        "cursor": cursor,
+    }
+    await hass.services.async_call(DOMAIN, yamaha.SERVICE_MENU_CURSOR, data, True)
+
+    getattr(main_zone, method).assert_called_once_with()
+
+
+async def test_select_scene(
+    hass: HomeAssistant, device, main_zone, caplog: pytest.LogCaptureFixture
+) -> None:
     """Test select scene service."""
     scene_prop = PropertyMock(return_value=None)
     type(main_zone).scene = scene_prop

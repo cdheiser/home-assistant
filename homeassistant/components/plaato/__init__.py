@@ -1,5 +1,4 @@
 """Support for Plaato devices."""
-
 from datetime import timedelta
 import logging
 
@@ -23,17 +22,16 @@ from pyplaato.plaato import (
 )
 import voluptuous as vol
 
+from homeassistant.components import webhook
 from homeassistant.components.sensor import DOMAIN as SENSOR
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
     CONF_SCAN_INTERVAL,
     CONF_TOKEN,
     CONF_WEBHOOK_ID,
-    HTTP_OK,
-    TEMP_CELSIUS,
-    TEMP_FAHRENHEIT,
-    VOLUME_GALLONS,
-    VOLUME_LITERS,
+    Platform,
+    UnitOfTemperature,
+    UnitOfVolume,
 )
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import aiohttp_client
@@ -68,8 +66,12 @@ WEBHOOK_SCHEMA = vol.Schema(
     {
         vol.Required(ATTR_DEVICE_NAME): cv.string,
         vol.Required(ATTR_DEVICE_ID): cv.positive_int,
-        vol.Required(ATTR_TEMP_UNIT): vol.Any(TEMP_CELSIUS, TEMP_FAHRENHEIT),
-        vol.Required(ATTR_VOLUME_UNIT): vol.Any(VOLUME_LITERS, VOLUME_GALLONS),
+        vol.Required(ATTR_TEMP_UNIT): vol.In(
+            UnitOfTemperature.CELSIUS, UnitOfTemperature.FAHRENHEIT
+        ),
+        vol.Required(ATTR_VOLUME_UNIT): vol.In(
+            UnitOfVolume.LITERS, UnitOfVolume.GALLONS
+        ),
         vol.Required(ATTR_BPM): cv.positive_int,
         vol.Required(ATTR_TEMP): vol.Coerce(float),
         vol.Required(ATTR_SG): vol.Coerce(float),
@@ -86,14 +88,13 @@ WEBHOOK_SCHEMA = vol.Schema(
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Configure based on config entry."""
     hass.data.setdefault(DOMAIN, {})
-    use_webhook = entry.data[CONF_USE_WEBHOOK]
 
-    if use_webhook:
+    if entry.data[CONF_USE_WEBHOOK]:
         async_setup_webhook(hass, entry)
     else:
         await async_setup_coordinator(hass, entry)
 
-    hass.config_entries.async_setup_platforms(
+    await hass.config_entries.async_forward_entry_setups(
         entry, [platform for platform in PLATFORMS if entry.options.get(platform, True)]
     )
 
@@ -108,8 +109,8 @@ def async_setup_webhook(hass: HomeAssistant, entry: ConfigEntry):
 
     _set_entry_data(entry, hass)
 
-    hass.components.webhook.async_register(
-        DOMAIN, f"{DOMAIN}.{device_name}", webhook_id, handle_webhook
+    webhook.async_register(
+        hass, DOMAIN, f"{DOMAIN}.{device_name}", webhook_id, handle_webhook
     )
 
 
@@ -148,7 +149,7 @@ def _set_entry_data(entry, hass, coordinator=None, device_id=None):
     }
 
 
-async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry):
+async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     use_webhook = entry.data[CONF_USE_WEBHOOK]
     hass.data[DOMAIN][entry.entry_id][UNDO_UPDATE_LISTENER]()
@@ -162,7 +163,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry):
 async def async_unload_webhook(hass: HomeAssistant, entry: ConfigEntry):
     """Unload webhook based entry."""
     if entry.data[CONF_WEBHOOK_ID] is not None:
-        hass.components.webhook.async_unregister(entry.data[CONF_WEBHOOK_ID])
+        webhook.async_unregister(hass, entry.data[CONF_WEBHOOK_ID])
     return await async_unload_platforms(hass, entry, PLATFORMS)
 
 
@@ -181,7 +182,7 @@ async def async_unload_platforms(hass: HomeAssistant, entry: ConfigEntry, platfo
     return unloaded
 
 
-async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry):
+async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Handle options update."""
     await hass.config_entries.async_reload(entry.entry_id)
 
@@ -199,7 +200,7 @@ async def handle_webhook(hass, webhook_id, request):
 
     async_dispatcher_send(hass, SENSOR_UPDATE, *(device_id, sensor_data))
 
-    return web.Response(text=f"Saving status for {device_id}", status=HTTP_OK)
+    return web.Response(text=f"Saving status for {device_id}")
 
 
 def _device_id(data):
@@ -212,16 +213,16 @@ class PlaatoCoordinator(DataUpdateCoordinator):
 
     def __init__(
         self,
-        hass,
-        auth_token,
+        hass: HomeAssistant,
+        auth_token: str,
         device_type: PlaatoDeviceType,
         update_interval: timedelta,
-    ):
+    ) -> None:
         """Initialize."""
         self.api = Plaato(auth_token=auth_token)
         self.hass = hass
         self.device_type = device_type
-        self.platforms = []
+        self.platforms: list[Platform] = []
 
         super().__init__(
             hass,

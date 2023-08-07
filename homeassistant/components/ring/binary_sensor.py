@@ -1,70 +1,99 @@
-"""This component provides HA sensor support for Ring Door Bell/Chimes."""
+"""Component providing HA sensor support for Ring Door Bell/Chimes."""
+from __future__ import annotations
+
+from dataclasses import dataclass
 from datetime import datetime
+from typing import Any
 
 from homeassistant.components.binary_sensor import (
-    DEVICE_CLASS_MOTION,
-    DEVICE_CLASS_OCCUPANCY,
+    BinarySensorDeviceClass,
     BinarySensorEntity,
+    BinarySensorEntityDescription,
 )
-from homeassistant.core import callback
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import DOMAIN
 from .entity import RingEntityMixin
 
-# Sensor types: Name, category, device_class
-SENSOR_TYPES = {
-    "ding": ["Ding", ["doorbots", "authorized_doorbots"], DEVICE_CLASS_OCCUPANCY],
-    "motion": [
-        "Motion",
-        ["doorbots", "authorized_doorbots", "stickup_cams"],
-        DEVICE_CLASS_MOTION,
-    ],
-}
+
+@dataclass
+class RingRequiredKeysMixin:
+    """Mixin for required keys."""
+
+    category: list[str]
 
 
-async def async_setup_entry(hass, config_entry, async_add_entities):
+@dataclass
+class RingBinarySensorEntityDescription(
+    BinarySensorEntityDescription, RingRequiredKeysMixin
+):
+    """Describes Ring binary sensor entity."""
+
+
+BINARY_SENSOR_TYPES: tuple[RingBinarySensorEntityDescription, ...] = (
+    RingBinarySensorEntityDescription(
+        key="ding",
+        translation_key="ding",
+        category=["doorbots", "authorized_doorbots"],
+        device_class=BinarySensorDeviceClass.OCCUPANCY,
+    ),
+    RingBinarySensorEntityDescription(
+        key="motion",
+        category=["doorbots", "authorized_doorbots", "stickup_cams"],
+        device_class=BinarySensorDeviceClass.MOTION,
+    ),
+)
+
+
+async def async_setup_entry(
+    hass: HomeAssistant,
+    config_entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
     """Set up the Ring binary sensors from a config entry."""
     ring = hass.data[DOMAIN][config_entry.entry_id]["api"]
     devices = hass.data[DOMAIN][config_entry.entry_id]["devices"]
 
-    sensors = []
+    entities = [
+        RingBinarySensor(config_entry.entry_id, ring, device, description)
+        for device_type in ("doorbots", "authorized_doorbots", "stickup_cams")
+        for description in BINARY_SENSOR_TYPES
+        if device_type in description.category
+        for device in devices[device_type]
+    ]
 
-    for device_type in ("doorbots", "authorized_doorbots", "stickup_cams"):
-        for sensor_type in SENSOR_TYPES:
-            if device_type not in SENSOR_TYPES[sensor_type][1]:
-                continue
-
-            for device in devices[device_type]:
-                sensors.append(
-                    RingBinarySensor(config_entry.entry_id, ring, device, sensor_type)
-                )
-
-    async_add_entities(sensors)
+    async_add_entities(entities)
 
 
 class RingBinarySensor(RingEntityMixin, BinarySensorEntity):
     """A binary sensor implementation for Ring device."""
 
-    _active_alert = None
+    _active_alert: dict[str, Any] | None = None
+    entity_description: RingBinarySensorEntityDescription
 
-    def __init__(self, config_entry_id, ring, device, sensor_type):
+    def __init__(
+        self,
+        config_entry_id,
+        ring,
+        device,
+        description: RingBinarySensorEntityDescription,
+    ) -> None:
         """Initialize a sensor for Ring device."""
         super().__init__(config_entry_id, device)
+        self.entity_description = description
         self._ring = ring
-        self._sensor_type = sensor_type
-        self._name = f"{self._device.name} {SENSOR_TYPES.get(sensor_type)[0]}"
-        self._device_class = SENSOR_TYPES.get(sensor_type)[2]
-        self._state = None
-        self._unique_id = f"{device.id}-{sensor_type}"
+        self._attr_unique_id = f"{device.id}-{description.key}"
         self._update_alert()
 
-    async def async_added_to_hass(self):
+    async def async_added_to_hass(self) -> None:
         """Register callbacks."""
         await super().async_added_to_hass()
         self.ring_objects["dings_data"].async_add_listener(self._dings_update_callback)
         self._dings_update_callback()
 
-    async def async_will_remove_from_hass(self):
+    async def async_will_remove_from_hass(self) -> None:
         """Disconnect callbacks."""
         await super().async_will_remove_from_hass()
         self.ring_objects["dings_data"].async_remove_listener(
@@ -84,31 +113,16 @@ class RingBinarySensor(RingEntityMixin, BinarySensorEntity):
             (
                 alert
                 for alert in self._ring.active_alerts()
-                if alert["kind"] == self._sensor_type
+                if alert["kind"] == self.entity_description.key
                 and alert["doorbot_id"] == self._device.id
             ),
             None,
         )
 
     @property
-    def name(self):
-        """Return the name of the sensor."""
-        return self._name
-
-    @property
     def is_on(self):
         """Return True if the binary sensor is on."""
         return self._active_alert is not None
-
-    @property
-    def device_class(self):
-        """Return the class of the binary sensor."""
-        return self._device_class
-
-    @property
-    def unique_id(self):
-        """Return a unique ID."""
-        return self._unique_id
 
     @property
     def extra_state_attributes(self):

@@ -19,7 +19,9 @@ async def async_init_integration(
     devices_fixture = "tado/devices.json"
     me_fixture = "tado/me.json"
     weather_fixture = "tado/weather.json"
+    home_state_fixture = "tado/home_state.json"
     zones_fixture = "tado/zones.json"
+    zone_states_fixture = "tado/zone_states.json"
 
     # WR1 Device
     device_wr1_fixture = "tado/device_wr1.json"
@@ -61,6 +63,10 @@ async def async_init_integration(
             text=load_fixture(weather_fixture),
         )
         m.get(
+            "https://my.tado.com/api/v2/homes/1/state",
+            text=load_fixture(home_state_fixture),
+        )
+        m.get(
             "https://my.tado.com/api/v2/homes/1/devices",
             text=load_fixture(devices_fixture),
         )
@@ -79,6 +85,10 @@ async def async_init_integration(
         m.get(
             "https://my.tado.com/api/v2/homes/1/zones",
             text=load_fixture(zones_fixture),
+        )
+        m.get(
+            "https://my.tado.com/api/v2/homes/1/zoneStates",
+            text=load_fixture(zone_states_fixture),
         )
         m.get(
             "https://my.tado.com/api/v2/homes/1/zones/5/capabilities",
@@ -141,7 +151,9 @@ async def async_init_integration(
             text=load_fixture(zone_1_state_fixture),
         )
         entry = MockConfigEntry(
-            domain=DOMAIN, data={CONF_USERNAME: "mock", CONF_PASSWORD: "mock"}
+            domain=DOMAIN,
+            data={CONF_USERNAME: "mock", CONF_PASSWORD: "mock"},
+            options={"fallback": "NEXT_TIME_BLOCK"},
         )
         entry.add_to_hass(hass)
 

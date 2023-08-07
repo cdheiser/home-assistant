@@ -11,12 +11,17 @@ from .common import ComponentFactory
 from tests.test_util.aiohttp import AiohttpClientMocker
 
 
-@pytest.fixture()
+@pytest.fixture
 def component_factory(
-    hass: HomeAssistant, aiohttp_client, aioclient_mock: AiohttpClientMocker
+    hass: HomeAssistant,
+    hass_client_no_auth,
+    aioclient_mock: AiohttpClientMocker,
+    current_request_with_host: None,
 ):
     """Return a factory for initializing the withings component."""
     with patch(
         "homeassistant.components.withings.common.ConfigEntryWithingsApi"
     ) as api_class_mock:
-        yield ComponentFactory(hass, api_class_mock, aiohttp_client, aioclient_mock)
+        yield ComponentFactory(
+            hass, api_class_mock, hass_client_no_auth, aioclient_mock
+        )

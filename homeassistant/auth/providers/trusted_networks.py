@@ -14,7 +14,7 @@ from ipaddress import (
     ip_address,
     ip_network,
 )
-from typing import Any, Dict, List, Union, cast
+from typing import Any, cast
 
 import voluptuous as vol
 
@@ -23,12 +23,12 @@ from homeassistant.data_entry_flow import FlowResult
 from homeassistant.exceptions import HomeAssistantError
 import homeassistant.helpers.config_validation as cv
 
-from . import AUTH_PROVIDER_SCHEMA, AUTH_PROVIDERS, AuthProvider, LoginFlow
 from .. import InvalidAuthError
 from ..models import Credentials, RefreshToken, UserMeta
+from . import AUTH_PROVIDER_SCHEMA, AUTH_PROVIDERS, AuthProvider, LoginFlow
 
-IPAddress = Union[IPv4Address, IPv6Address]
-IPNetwork = Union[IPv4Network, IPv6Network]
+IPAddress = IPv4Address | IPv6Address
+IPNetwork = IPv4Network | IPv6Network
 
 CONF_TRUSTED_NETWORKS = "trusted_networks"
 CONF_TRUSTED_USERS = "trusted_users"
@@ -46,7 +46,7 @@ CONFIG_SCHEMA = AUTH_PROVIDER_SCHEMA.extend(
                     [
                         vol.Or(
                             cv.uuid4_hex,
-                            vol.Schema({vol.Required(CONF_GROUP): cv.uuid4_hex}),
+                            vol.Schema({vol.Required(CONF_GROUP): str}),
                         )
                     ],
                 )
@@ -74,19 +74,30 @@ class TrustedNetworksAuthProvider(AuthProvider):
     @property
     def trusted_networks(self) -> list[IPNetwork]:
         """Return trusted networks."""
-        return cast(List[IPNetwork], self.config[CONF_TRUSTED_NETWORKS])
+        return cast(list[IPNetwork], self.config[CONF_TRUSTED_NETWORKS])
 
     @property
     def trusted_users(self) -> dict[IPNetwork, Any]:
         """Return trusted users per network."""
-        return cast(Dict[IPNetwork, Any], self.config[CONF_TRUSTED_USERS])
+        return cast(dict[IPNetwork, Any], self.config[CONF_TRUSTED_USERS])
+
+    @property
+    def trusted_proxies(self) -> list[IPNetwork]:
+        """Return trusted proxies in the system."""
+        if not self.hass.http:
+            return []
+
+        return [
+            ip_network(trusted_proxy)
+            for trusted_proxy in self.hass.http.trusted_proxies
+        ]
 
     @property
     def support_mfa(self) -> bool:
         """Trusted Networks auth provider does not support MFA."""
         return False
 
-    async def async_login_flow(self, context: dict | None) -> LoginFlow:
+    async def async_login_flow(self, context: dict[str, Any] | None) -> LoginFlow:
         """Return a flow to login."""
         assert context is not None
         ip_addr = cast(IPAddress, context.get("ip_address"))
@@ -178,6 +189,15 @@ class TrustedNetworksAuthProvider(AuthProvider):
         ):
             raise InvalidAuthError("Not in trusted_networks")
 
+        if any(ip_addr in trusted_proxy for trusted_proxy in self.trusted_proxies):
+            raise InvalidAuthError("Can't allow access from a proxy server")
+
+        if "cloud" in self.hass.config.components:
+            from hass_nabucasa import remote  # pylint: disable=import-outside-toplevel
+
+            if remote.is_cloud_request.get():
+                raise InvalidAuthError("Can't allow access from Home Assistant Cloud")
+
     @callback
     def async_validate_refresh_token(
         self, refresh_token: RefreshToken, remote_ip: str | None = None
@@ -228,5 +248,7 @@ class TrustedNetworksLoginFlow(LoginFlow):
 
         return self.async_show_form(
             step_id="init",
-            data_schema=vol.Schema({"user": vol.In(self._available_users)}),
+            data_schema=vol.Schema(
+                {vol.Required("user"): vol.In(self._available_users)}
+            ),
         )

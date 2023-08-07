@@ -1,4 +1,6 @@
 """Sensor for Suez Water Consumption data."""
+from __future__ import annotations
+
 from datetime import timedelta
 import logging
 
@@ -6,17 +8,22 @@ from pysuez import SuezClient
 from pysuez.client import PySuezError
 import voluptuous as vol
 
-from homeassistant.components.sensor import PLATFORM_SCHEMA, SensorEntity
-from homeassistant.const import CONF_PASSWORD, CONF_USERNAME, VOLUME_LITERS
+from homeassistant.components.sensor import (
+    PLATFORM_SCHEMA,
+    SensorDeviceClass,
+    SensorEntity,
+)
+from homeassistant.const import CONF_PASSWORD, CONF_USERNAME, UnitOfVolume
+from homeassistant.core import HomeAssistant
 import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 
 _LOGGER = logging.getLogger(__name__)
-CONF_COUNTER_ID = "counter_id"
 
 SCAN_INTERVAL = timedelta(hours=12)
 
-COMPONENT_ICON = "mdi:water-pump"
-COMPONENT_NAME = "Suez Water Client"
+CONF_COUNTER_ID = "counter_id"
 
 PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
     {
@@ -27,7 +34,12 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
 )
 
 
-def setup_platform(hass, config, add_entities, discovery_info=None):
+def setup_platform(
+    hass: HomeAssistant,
+    config: ConfigType,
+    add_entities: AddEntitiesCallback,
+    discovery_info: DiscoveryInfoType | None = None,
+) -> None:
     """Set up the sensor platform."""
     username = config[CONF_USERNAME]
     password = config[CONF_PASSWORD]
@@ -49,76 +61,55 @@ def setup_platform(hass, config, add_entities, discovery_info=None):
 class SuezSensor(SensorEntity):
     """Representation of a Sensor."""
 
-    def __init__(self, client):
+    _attr_name = "Suez Water Client"
+    _attr_icon = "mdi:water-pump"
+    _attr_native_unit_of_measurement = UnitOfVolume.LITERS
+    _attr_device_class = SensorDeviceClass.WATER
+
+    def __init__(self, client: SuezClient) -> None:
         """Initialize the data object."""
-        self._attributes = {}
-        self._state = None
-        self._available = None
         self.client = client
-
-    @property
-    def name(self):
-        """Return the name of the sensor."""
-        return COMPONENT_NAME
-
-    @property
-    def state(self):
-        """Return the state of the sensor."""
-        return self._state
-
-    @property
-    def unit_of_measurement(self):
-        """Return the unit of measurement."""
-        return VOLUME_LITERS
-
-    @property
-    def extra_state_attributes(self):
-        """Return the state attributes."""
-        return self._attributes
-
-    @property
-    def icon(self):
-        """Return the icon of the sensor."""
-        return COMPONENT_ICON
+        self._attr_extra_state_attributes = {}
 
     def _fetch_data(self):
         """Fetch latest data from Suez."""
         try:
             self.client.update()
             # _state holds the volume of consumed water during previous day
-            self._state = self.client.state
-            self._available = True
-            self._attributes["attribution"] = self.client.attributes["attribution"]
-            self._attributes["this_month_consumption"] = {}
+            self._attr_native_value = self.client.state
+            self._attr_available = True
+            self._attr_attribution = self.client.attributes["attribution"]
+
+            self._attr_extra_state_attributes["this_month_consumption"] = {}
             for item in self.client.attributes["thisMonthConsumption"]:
-                self._attributes["this_month_consumption"][
+                self._attr_extra_state_attributes["this_month_consumption"][
                     item
                 ] = self.client.attributes["thisMonthConsumption"][item]
-            self._attributes["previous_month_consumption"] = {}
+            self._attr_extra_state_attributes["previous_month_consumption"] = {}
             for item in self.client.attributes["previousMonthConsumption"]:
-                self._attributes["previous_month_consumption"][
+                self._attr_extra_state_attributes["previous_month_consumption"][
                     item
                 ] = self.client.attributes["previousMonthConsumption"][item]
-            self._attributes["highest_monthly_consumption"] = self.client.attributes[
-                "highestMonthlyConsumption"
-            ]
-            self._attributes["last_year_overall"] = self.client.attributes[
-                "lastYearOverAll"
-            ]
-            self._attributes["this_year_overall"] = self.client.attributes[
-                "thisYearOverAll"
-            ]
-            self._attributes["history"] = {}
+            self._attr_extra_state_attributes[
+                "highest_monthly_consumption"
+            ] = self.client.attributes["highestMonthlyConsumption"]
+            self._attr_extra_state_attributes[
+                "last_year_overall"
+            ] = self.client.attributes["lastYearOverAll"]
+            self._attr_extra_state_attributes[
+                "this_year_overall"
+            ] = self.client.attributes["thisYearOverAll"]
+            self._attr_extra_state_attributes["history"] = {}
             for item in self.client.attributes["history"]:
-                self._attributes["history"][item] = self.client.attributes["history"][
+                self._attr_extra_state_attributes["history"][
                     item
-                ]
+                ] = self.client.attributes["history"][item]
 
         except PySuezError:
-            self._available = False
+            self._attr_available = False
             _LOGGER.warning("Unable to fetch data")
 
-    def update(self):
-        """Return the latest collected data from Linky."""
+    def update(self) -> None:
+        """Return the latest collected data from Suez."""
         self._fetch_data()
-        _LOGGER.debug("Suez data state is: %s", self._state)
+        _LOGGER.debug("Suez data state is: %s", self.native_value)

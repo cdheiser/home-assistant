@@ -1,18 +1,14 @@
 """Constants used in modbus integration."""
+from enum import Enum
 
-from homeassistant.components.binary_sensor import DOMAIN as BINARY_SENSOR_DOMAIN
-from homeassistant.components.climate.const import DOMAIN as CLIMATE_DOMAIN
-from homeassistant.components.cover import DOMAIN as COVER_DOMAIN
-from homeassistant.components.fan import DOMAIN as FAN_DOMAIN
-from homeassistant.components.light import DOMAIN as LIGHT_DOMAIN
-from homeassistant.components.sensor import DOMAIN as SENSOR_DOMAIN
-from homeassistant.components.switch import DOMAIN as SWITCH_DOMAIN
 from homeassistant.const import (
+    CONF_ADDRESS,
     CONF_BINARY_SENSORS,
     CONF_COVERS,
     CONF_LIGHTS,
     CONF_SENSORS,
     CONF_SWITCHES,
+    Platform,
 )
 
 # configuration names
@@ -23,21 +19,27 @@ CONF_CLOSE_COMM_ON_ERROR = "close_comm_on_error"
 CONF_COILS = "coils"
 CONF_CURRENT_TEMP = "current_temp_register"
 CONF_CURRENT_TEMP_REGISTER_TYPE = "current_temp_register_type"
-CONF_DATA_COUNT = "data_count"
 CONF_DATA_TYPE = "data_type"
 CONF_FANS = "fans"
 CONF_HUB = "hub"
 CONF_INPUTS = "inputs"
 CONF_INPUT_TYPE = "input_type"
+CONF_LAZY_ERROR = "lazy_error_count"
 CONF_MAX_TEMP = "max_temp"
+CONF_MAX_VALUE = "max_value"
 CONF_MIN_TEMP = "min_temp"
+CONF_MIN_VALUE = "min_value"
+CONF_MSG_WAIT = "message_wait_milliseconds"
+CONF_NAN_VALUE = "nan_value"
 CONF_PARITY = "parity"
 CONF_REGISTER = "register"
 CONF_REGISTER_TYPE = "register_type"
 CONF_REGISTERS = "registers"
-CONF_REVERSE_ORDER = "reverse_order"
+CONF_RETRIES = "retries"
+CONF_RETRY_ON_EMPTY = "retry_on_empty"
 CONF_PRECISION = "precision"
 CONF_SCALE = "scale"
+CONF_SLAVE_COUNT = "slave_count"
 CONF_STATE_CLOSED = "state_closed"
 CONF_STATE_CLOSING = "state_closing"
 CONF_STATE_OFF = "state_off"
@@ -54,25 +56,55 @@ CONF_SWAP_NONE = "none"
 CONF_SWAP_WORD = "word"
 CONF_SWAP_WORD_BYTE = "word_byte"
 CONF_TARGET_TEMP = "target_temp_register"
+CONF_TARGET_TEMP_WRITE_REGISTERS = "target_temp_write_registers"
+CONF_HVAC_MODE_REGISTER = "hvac_mode_register"
+CONF_HVAC_MODE_VALUES = "values"
+CONF_HVAC_ONOFF_REGISTER = "hvac_onoff_register"
+CONF_HVAC_MODE_OFF = "state_off"
+CONF_HVAC_MODE_HEAT = "state_heat"
+CONF_HVAC_MODE_COOL = "state_cool"
+CONF_HVAC_MODE_HEAT_COOL = "state_heat_cool"
+CONF_HVAC_MODE_AUTO = "state_auto"
+CONF_HVAC_MODE_DRY = "state_dry"
+CONF_HVAC_MODE_FAN_ONLY = "state_fan_only"
+CONF_WRITE_REGISTERS = "write_registers"
 CONF_VERIFY = "verify"
 CONF_VERIFY_REGISTER = "verify_register"
 CONF_VERIFY_STATE = "verify_state"
 CONF_WRITE_TYPE = "write_type"
+CONF_ZERO_SUPPRESS = "zero_suppress"
+
+RTUOVERTCP = "rtuovertcp"
+SERIAL = "serial"
+TCP = "tcp"
+UDP = "udp"
+
 
 # service call attributes
-ATTR_ADDRESS = "address"
-ATTR_HUB = "hub"
+ATTR_ADDRESS = CONF_ADDRESS
+ATTR_HUB = CONF_HUB
 ATTR_UNIT = "unit"
+ATTR_SLAVE = "slave"
 ATTR_VALUE = "value"
-ATTR_STATE = "state"
-ATTR_TEMPERATURE = "temperature"
 
-# data types
-DATA_TYPE_CUSTOM = "custom"
-DATA_TYPE_FLOAT = "float"
-DATA_TYPE_INT = "int"
-DATA_TYPE_UINT = "uint"
-DATA_TYPE_STRING = "string"
+
+class DataType(str, Enum):
+    """Data types used by sensor etc."""
+
+    CUSTOM = "custom"
+    STRING = "string"
+    INT8 = "int8"
+    INT16 = "int16"
+    INT32 = "int32"
+    INT64 = "int64"
+    UINT8 = "uint8"
+    UINT16 = "uint16"
+    UINT32 = "uint32"
+    UINT64 = "uint64"
+    FLOAT16 = "float16"
+    FLOAT32 = "float32"
+    FLOAT64 = "float64"
+
 
 # call types
 CALL_TYPE_COIL = "coil"
@@ -83,31 +115,35 @@ CALL_TYPE_WRITE_COIL = "write_coil"
 CALL_TYPE_WRITE_COILS = "write_coils"
 CALL_TYPE_WRITE_REGISTER = "write_register"
 CALL_TYPE_WRITE_REGISTERS = "write_registers"
+CALL_TYPE_X_COILS = "coils"
+CALL_TYPE_X_REGISTER_HOLDINGS = "holdings"
 
 # service calls
 SERVICE_WRITE_COIL = "write_coil"
 SERVICE_WRITE_REGISTER = "write_register"
+SERVICE_STOP = "stop"
+SERVICE_RESTART = "restart"
+
+# dispatcher signals
+SIGNAL_STOP_ENTITY = "modbus.stop"
+SIGNAL_START_ENTITY = "modbus.start"
 
 # integration names
 DEFAULT_HUB = "modbus_hub"
-MINIMUM_SCAN_INTERVAL = 5  # seconds
 DEFAULT_SCAN_INTERVAL = 15  # seconds
 DEFAULT_SLAVE = 1
 DEFAULT_STRUCTURE_PREFIX = ">f"
-DEFAULT_STRUCT_FORMAT = {
-    DATA_TYPE_INT: {1: "h", 2: "i", 4: "q"},
-    DATA_TYPE_UINT: {1: "H", 2: "I", 4: "Q"},
-    DATA_TYPE_FLOAT: {1: "e", 2: "f", 4: "d"},
-}
 DEFAULT_TEMP_UNIT = "C"
 MODBUS_DOMAIN = "modbus"
 
+ACTIVE_SCAN_INTERVAL = 2  # limit to force an extra update
+
 PLATFORMS = (
-    (BINARY_SENSOR_DOMAIN, CONF_BINARY_SENSORS),
-    (CLIMATE_DOMAIN, CONF_CLIMATES),
-    (COVER_DOMAIN, CONF_COVERS),
-    (LIGHT_DOMAIN, CONF_LIGHTS),
-    (FAN_DOMAIN, CONF_FANS),
-    (SENSOR_DOMAIN, CONF_SENSORS),
-    (SWITCH_DOMAIN, CONF_SWITCHES),
+    (Platform.BINARY_SENSOR, CONF_BINARY_SENSORS),
+    (Platform.CLIMATE, CONF_CLIMATES),
+    (Platform.COVER, CONF_COVERS),
+    (Platform.LIGHT, CONF_LIGHTS),
+    (Platform.FAN, CONF_FANS),
+    (Platform.SENSOR, CONF_SENSORS),
+    (Platform.SWITCH, CONF_SWITCHES),
 )

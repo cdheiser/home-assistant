@@ -6,23 +6,24 @@ import async_timeout
 from mullvad_api import MullvadAPI
 
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import update_coordinator
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
 from .const import DOMAIN
 
-PLATFORMS = ["binary_sensor"]
+PLATFORMS = [Platform.BINARY_SENSOR]
 
 
-async def async_setup_entry(hass: HomeAssistant, entry: dict) -> bool:
+async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Mullvad VPN integration."""
 
     async def async_get_mullvad_api_data():
-        with async_timeout.timeout(10):
+        async with async_timeout.timeout(10):
             api = await hass.async_add_executor_job(MullvadAPI)
             return api.data
 
-    coordinator = update_coordinator.DataUpdateCoordinator(
+    coordinator = DataUpdateCoordinator(
         hass,
         logging.getLogger(__name__),
         name=DOMAIN,
@@ -33,12 +34,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: dict) -> bool:
 
     hass.data[DOMAIN] = coordinator
 
-    hass.config_entries.async_setup_platforms(entry, PLATFORMS)
+    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     return True
 
 
-async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry):
+async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:

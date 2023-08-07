@@ -54,6 +54,7 @@ SCHEDULE_TYPE_FIXED = "FIXED"
 SCHEDULE_TYPE_FLEX = "FLEX"
 SERVICE_PAUSE_WATERING = "pause_watering"
 SERVICE_RESUME_WATERING = "resume_watering"
+SERVICE_STOP_WATERING = "stop_watering"
 SERVICE_SET_ZONE_MOISTURE = "set_zone_moisture_percent"
 SERVICE_START_MULTIPLE_ZONES = "start_multiple_zone_schedule"
 
@@ -66,3 +67,13 @@ SIGNAL_RACHIO_SCHEDULE_UPDATE = f"{SIGNAL_RACHIO_UPDATE}_schedule"
 
 CONF_WEBHOOK_ID = "webhook_id"
 CONF_CLOUDHOOK_URL = "cloudhook_url"
+
+# Webhook callbacks
+LISTEN_EVENT_TYPES = [
+    "DEVICE_STATUS_EVENT",
+    "ZONE_STATUS_EVENT",
+    "RAIN_DELAY_EVENT",
+    "RAIN_SENSOR_DETECTION_EVENT",
+    "SCHEDULE_STATUS_EVENT",
+]
+WEBHOOK_CONST_ID = "homeassistant.rachio:"

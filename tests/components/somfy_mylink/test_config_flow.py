@@ -4,21 +4,22 @@ from unittest.mock import patch
 
 import pytest
 
-from homeassistant import config_entries, data_entry_flow, setup
-from homeassistant.components.dhcp import HOSTNAME, IP_ADDRESS, MAC_ADDRESS
+from homeassistant import config_entries, data_entry_flow
+from homeassistant.components import dhcp
 from homeassistant.components.somfy_mylink.const import (
     CONF_REVERSED_TARGET_IDS,
     CONF_SYSTEM_ID,
     DOMAIN,
 )
 from homeassistant.const import CONF_HOST, CONF_PORT
+from homeassistant.core import HomeAssistant
 
 from tests.common import MockConfigEntry
 
 
-async def test_form_user(hass):
+async def test_form_user(hass: HomeAssistant) -> None:
     """Test we get the form."""
-    await setup.async_setup_component(hass, "persistent_notification", {})
+
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": config_entries.SOURCE_USER}
     )
@@ -52,9 +53,8 @@ async def test_form_user(hass):
     assert len(mock_setup_entry.mock_calls) == 1
 
 
-async def test_form_user_already_configured(hass):
+async def test_form_user_already_configured(hass: HomeAssistant) -> None:
     """Test we abort if already configured."""
-    await setup.async_setup_component(hass, "persistent_notification", {})
 
     config_entry = MockConfigEntry(
         domain=DOMAIN,
@@ -88,7 +88,7 @@ async def test_form_user_already_configured(hass):
     assert len(mock_setup_entry.mock_calls) == 0
 
 
-async def test_form_invalid_auth(hass):
+async def test_form_invalid_auth(hass: HomeAssistant) -> None:
     """Test we handle invalid auth."""
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": config_entries.SOURCE_USER}
@@ -115,7 +115,7 @@ async def test_form_invalid_auth(hass):
     assert result2["errors"] == {"base": "invalid_auth"}
 
 
-async def test_form_cannot_connect(hass):
+async def test_form_cannot_connect(hass: HomeAssistant) -> None:
     """Test we handle cannot connect error."""
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": config_entries.SOURCE_USER}
@@ -138,7 +138,7 @@ async def test_form_cannot_connect(hass):
     assert result2["errors"] == {"base": "cannot_connect"}
 
 
-async def test_form_unknown_error(hass):
+async def test_form_unknown_error(hass: HomeAssistant) -> None:
     """Test we handle broad exception."""
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": config_entries.SOURCE_USER}
@@ -161,9 +161,8 @@ async def test_form_unknown_error(hass):
     assert result2["errors"] == {"base": "unknown"}
 
 
-async def test_options_not_loaded(hass):
+async def test_options_not_loaded(hass: HomeAssistant) -> None:
     """Test options will not display until loaded."""
-    await setup.async_setup_component(hass, "persistent_notification", {})
 
     config_entry = MockConfigEntry(
         domain=DOMAIN,
@@ -177,13 +176,12 @@ async def test_options_not_loaded(hass):
     ):
         result = await hass.config_entries.options.async_init(config_entry.entry_id)
         await hass.async_block_till_done()
-        assert result["type"] == data_entry_flow.RESULT_TYPE_ABORT
+        assert result["type"] == data_entry_flow.FlowResultType.ABORT
 
 
 @pytest.mark.parametrize("reversed", [True, False])
-async def test_options_with_targets(hass, reversed):
+async def test_options_with_targets(hass: HomeAssistant, reversed) -> None:
     """Test we can configure reverse for a target."""
-    await setup.async_setup_component(hass, "persistent_notification", {})
 
     config_entry = MockConfigEntry(
         domain=DOMAIN,
@@ -207,7 +205,7 @@ async def test_options_with_targets(hass, reversed):
         await hass.async_block_till_done()
         result = await hass.config_entries.options.async_init(config_entry.entry_id)
         await hass.async_block_till_done()
-        assert result["type"] == data_entry_flow.RESULT_TYPE_FORM
+        assert result["type"] == data_entry_flow.FlowResultType.FORM
         assert result["step_id"] == "init"
 
         result2 = await hass.config_entries.options.async_configure(
@@ -215,19 +213,19 @@ async def test_options_with_targets(hass, reversed):
             user_input={"target_id": "a"},
         )
 
-        assert result2["type"] == data_entry_flow.RESULT_TYPE_FORM
+        assert result2["type"] == data_entry_flow.FlowResultType.FORM
         result3 = await hass.config_entries.options.async_configure(
             result2["flow_id"],
             user_input={"reverse": reversed},
         )
 
-        assert result3["type"] == data_entry_flow.RESULT_TYPE_FORM
+        assert result3["type"] == data_entry_flow.FlowResultType.FORM
 
         result4 = await hass.config_entries.options.async_configure(
             result3["flow_id"],
             user_input={"target_id": None},
         )
-        assert result4["type"] == data_entry_flow.RESULT_TYPE_CREATE_ENTRY
+        assert result4["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
 
         assert config_entry.options == {
             CONF_REVERSED_TARGET_IDS: {"a": reversed},
@@ -236,9 +234,8 @@ async def test_options_with_targets(hass, reversed):
         await hass.async_block_till_done()
 
 
-async def test_form_user_already_configured_from_dhcp(hass):
+async def test_form_user_already_configured_from_dhcp(hass: HomeAssistant) -> None:
     """Test we abort if already configured from dhcp."""
-    await setup.async_setup_component(hass, "persistent_notification", {})
 
     config_entry = MockConfigEntry(
         domain=DOMAIN,
@@ -256,11 +253,11 @@ async def test_form_user_already_configured_from_dhcp(hass):
         result = await hass.config_entries.flow.async_init(
             DOMAIN,
             context={"source": config_entries.SOURCE_DHCP},
-            data={
-                IP_ADDRESS: "1.1.1.1",
-                MAC_ADDRESS: "AA:BB:CC:DD:EE:FF",
-                HOSTNAME: "somfy_eeff",
-            },
+            data=dhcp.DhcpServiceInfo(
+                ip="1.1.1.1",
+                macaddress="AA:BB:CC:DD:EE:FF",
+                hostname="somfy_eeff",
+            ),
         )
 
         await hass.async_block_till_done()
@@ -269,9 +266,8 @@ async def test_form_user_already_configured_from_dhcp(hass):
     assert len(mock_setup_entry.mock_calls) == 0
 
 
-async def test_already_configured_with_ignored(hass):
+async def test_already_configured_with_ignored(hass: HomeAssistant) -> None:
     """Test ignored entries do not break checking for existing entries."""
-    await setup.async_setup_component(hass, "persistent_notification", {})
 
     config_entry = MockConfigEntry(
         domain=DOMAIN, data={}, source=config_entries.SOURCE_IGNORE
@@ -281,26 +277,26 @@ async def test_already_configured_with_ignored(hass):
     result = await hass.config_entries.flow.async_init(
         DOMAIN,
         context={"source": config_entries.SOURCE_DHCP},
-        data={
-            IP_ADDRESS: "1.1.1.1",
-            MAC_ADDRESS: "AA:BB:CC:DD:EE:FF",
-            HOSTNAME: "somfy_eeff",
-        },
+        data=dhcp.DhcpServiceInfo(
+            ip="1.1.1.1",
+            macaddress="AA:BB:CC:DD:EE:FF",
+            hostname="somfy_eeff",
+        ),
     )
     assert result["type"] == "form"
 
 
-async def test_dhcp_discovery(hass):
+async def test_dhcp_discovery(hass: HomeAssistant) -> None:
     """Test we can process the discovery from dhcp."""
-    await setup.async_setup_component(hass, "persistent_notification", {})
+
     result = await hass.config_entries.flow.async_init(
         DOMAIN,
         context={"source": config_entries.SOURCE_DHCP},
-        data={
-            IP_ADDRESS: "1.1.1.1",
-            MAC_ADDRESS: "AA:BB:CC:DD:EE:FF",
-            HOSTNAME: "somfy_eeff",
-        },
+        data=dhcp.DhcpServiceInfo(
+            ip="1.1.1.1",
+            macaddress="AA:BB:CC:DD:EE:FF",
+            hostname="somfy_eeff",
+        ),
     )
     assert result["type"] == "form"
     assert result["errors"] == {}

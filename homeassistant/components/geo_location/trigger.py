@@ -1,20 +1,38 @@
 """Offer geolocation automation rules."""
+from __future__ import annotations
+
+import logging
+from typing import Final
+
 import voluptuous as vol
 
-from homeassistant.components.geo_location import DOMAIN
 from homeassistant.const import CONF_EVENT, CONF_PLATFORM, CONF_SOURCE, CONF_ZONE
-from homeassistant.core import HassJob, callback
+from homeassistant.core import (
+    CALLBACK_TYPE,
+    HassJob,
+    HomeAssistant,
+    State,
+    callback,
+)
 from homeassistant.helpers import condition, config_validation as cv
 from homeassistant.helpers.config_validation import entity_domain
-from homeassistant.helpers.event import TrackStates, async_track_state_change_filtered
+from homeassistant.helpers.event import (
+    EventStateChangedData,
+    TrackStates,
+    async_track_state_change_filtered,
+)
+from homeassistant.helpers.trigger import TriggerActionType, TriggerInfo
+from homeassistant.helpers.typing import ConfigType, EventType
 
-# mypy: allow-untyped-defs, no-check-untyped-defs
+from . import DOMAIN
 
-EVENT_ENTER = "enter"
-EVENT_LEAVE = "leave"
-DEFAULT_EVENT = EVENT_ENTER
+_LOGGER = logging.getLogger(__name__)
 
-TRIGGER_SCHEMA = vol.Schema(
+EVENT_ENTER: Final = "enter"
+EVENT_LEAVE: Final = "leave"
+DEFAULT_EVENT: Final = EVENT_ENTER
+
+TRIGGER_SCHEMA = cv.TRIGGER_BASE_SCHEMA.extend(
     {
         vol.Required(CONF_PLATFORM): "geo_location",
         vol.Required(CONF_SOURCE): cv.string,
@@ -26,29 +44,40 @@ TRIGGER_SCHEMA = vol.Schema(
 )
 
 
-def source_match(state, source):
+def source_match(state: State | None, source: str) -> bool:
     """Check if the state matches the provided source."""
-    return state and state.attributes.get("source") == source
+    return state is not None and state.attributes.get("source") == source
 
 
-async def async_attach_trigger(hass, config, action, automation_info):
+async def async_attach_trigger(
+    hass: HomeAssistant,
+    config: ConfigType,
+    action: TriggerActionType,
+    trigger_info: TriggerInfo,
+) -> CALLBACK_TYPE:
     """Listen for state changes based on configuration."""
-    trigger_id = automation_info.get("trigger_id") if automation_info else None
-    source = config.get(CONF_SOURCE).lower()
-    zone_entity_id = config.get(CONF_ZONE)
-    trigger_event = config.get(CONF_EVENT)
+    trigger_data = trigger_info["trigger_data"]
+    source: str = config[CONF_SOURCE].lower()
+    zone_entity_id: str = config[CONF_ZONE]
+    trigger_event: str = config[CONF_EVENT]
     job = HassJob(action)
 
     @callback
-    def state_change_listener(event):
+    def state_change_listener(event: EventType[EventStateChangedData]) -> None:
         """Handle specific state changes."""
         # Skip if the event's source does not match the trigger's source.
-        from_state = event.data.get("old_state")
-        to_state = event.data.get("new_state")
+        from_state = event.data["old_state"]
+        to_state = event.data["new_state"]
         if not source_match(from_state, source) and not source_match(to_state, source):
             return
 
-        zone_state = hass.states.get(zone_entity_id)
+        if (zone_state := hass.states.get(zone_entity_id)) is None:
+            _LOGGER.warning(
+                "Unable to execute automation %s: Zone %s not found",
+                trigger_info["name"],
+                zone_entity_id,
+            )
+            return
 
         from_match = (
             condition.zone(hass, zone_state, from_state) if from_state else False
@@ -67,15 +96,15 @@ async def async_attach_trigger(hass, config, action, automation_info):
                 job,
                 {
                     "trigger": {
+                        **trigger_data,
                         "platform": "geo_location",
                         "source": source,
-                        "entity_id": event.data.get("entity_id"),
+                        "entity_id": event.data["entity_id"],
                         "from_state": from_state,
                         "to_state": to_state,
                         "zone": zone_state,
                         "event": trigger_event,
                         "description": f"geo_location - {source}",
-                        "id": trigger_id,
                     }
                 },
                 event.context,

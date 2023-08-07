@@ -2,83 +2,124 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
-import datetime
 import logging
-from typing import Callable
+import re
+from typing import TYPE_CHECKING, Any
 
-from pysonos.data_structures import DidlFavorite
-from pysonos.events_base import Event as SonosEvent
-from pysonos.exceptions import SoCoException
+from soco import SoCo
+from soco.data_structures import DidlFavorite
+from soco.events_base import Event as SonosEvent
+from soco.exceptions import SoCoException
 
-from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.dispatcher import dispatcher_send
+from homeassistant.helpers.dispatcher import async_dispatcher_send, dispatcher_send
 
-from .const import DATA_SONOS, SONOS_HOUSEHOLD_UPDATED
+from .const import SONOS_CREATE_FAVORITES_SENSOR, SONOS_FAVORITES_UPDATED
+from .helpers import soco_error
+from .household_coordinator import SonosHouseholdCoordinator
+
+if TYPE_CHECKING:
+    from .speaker import SonosSpeaker
 
 _LOGGER = logging.getLogger(__name__)
 
 
-class SonosFavorites:
-    """Storage class for Sonos favorites."""
+class SonosFavorites(SonosHouseholdCoordinator):
+    """Coordinator class for Sonos favorites."""
 
-    def __init__(self, hass: HomeAssistant, household_id: str) -> None:
+    def __init__(self, *args: Any) -> None:
         """Initialize the data."""
-        self.hass = hass
-        self.household_id = household_id
+        super().__init__(*args)
         self._favorites: list[DidlFavorite] = []
-        self._event_version: str | None = None
-        self._next_update: Callable | None = None
+        self.last_polled_ids: dict[str, int] = {}
 
-    def __iter__(self) -> Iterator:
+    def __iter__(self) -> Iterator[DidlFavorite]:
         """Return an iterator for the known favorites."""
         favorites = self._favorites.copy()
         return iter(favorites)
 
-    @callback
-    def async_delayed_update(self, event: SonosEvent) -> None:
-        """Add a delay when triggered by an event.
+    def setup(self, soco: SoCo) -> None:
+        """Override to send a signal on base class setup completion."""
+        super().setup(soco)
+        dispatcher_send(self.hass, SONOS_CREATE_FAVORITES_SENSOR, self)
 
-        Updated favorites are not always immediately available.
+    @property
+    def count(self) -> int:
+        """Return the number of favorites."""
+        return len(self._favorites)
 
-        """
-        if not (event_id := event.variables.get("favorites_update_id")):
+    def lookup_by_item_id(self, item_id: str) -> DidlFavorite | None:
+        """Return the favorite object with the provided item_id."""
+        return next((fav for fav in self._favorites if fav.item_id == item_id), None)
+
+    async def async_update_entities(
+        self, soco: SoCo, update_id: int | None = None
+    ) -> None:
+        """Update the cache and update entities."""
+        updated = await self.hass.async_add_executor_job(
+            self.update_cache, soco, update_id
+        )
+        if not updated:
             return
 
-        if not self._event_version:
-            self._event_version = event_id
+        async_dispatcher_send(
+            self.hass, f"{SONOS_FAVORITES_UPDATED}-{self.household_id}"
+        )
+
+    async def async_process_event(
+        self, event: SonosEvent, speaker: SonosSpeaker
+    ) -> None:
+        """Process the event payload in an async lock and update entities."""
+        event_id = event.variables["favorites_update_id"]
+        container_ids = event.variables["container_update_i_ds"]
+        if not (match := re.search(r"FV:2,(\d+)", container_ids)):
             return
 
-        if self._event_version == event_id:
-            _LOGGER.debug("Favorites haven't changed (event_id: %s)", event_id)
-            return
+        container_id = int(match.groups()[0])
+        event_id = int(event_id.split(",")[-1])
 
-        self._event_version = event_id
+        async with self.cache_update_lock:
+            last_poll_id = self.last_polled_ids.get(speaker.uid)
+            if (
+                self.last_processed_event_id
+                and event_id <= self.last_processed_event_id
+            ):
+                # Skip updates if this event_id has already been seen
+                if not last_poll_id:
+                    self.last_polled_ids[speaker.uid] = container_id
+                return
 
-        if self._next_update:
-            self._next_update()
+            if last_poll_id and container_id <= last_poll_id:
+                return
 
-        self._next_update = self.hass.helpers.event.async_call_later(3, self.update)
+            speaker.event_stats.process(event)
+            _LOGGER.debug(
+                "New favorites event %s from %s (was %s)",
+                event_id,
+                speaker.soco,
+                self.last_processed_event_id,
+            )
+            self.last_processed_event_id = event_id
+            await self.async_update_entities(speaker.soco, container_id)
 
-    def update(self, now: datetime.datetime | None = None) -> None:
-        """Request new Sonos favorites from a speaker."""
-        new_favorites = None
-        discovered = self.hass.data[DATA_SONOS].discovered
+    @soco_error()
+    def update_cache(self, soco: SoCo, update_id: int | None = None) -> bool:
+        """Update cache of known favorites and return if cache has changed."""
+        new_favorites = soco.music_library.get_sonos_favorites()
 
-        for uid, speaker in discovered.items():
-            try:
-                new_favorites = speaker.soco.music_library.get_sonos_favorites()
-            except SoCoException as err:
-                _LOGGER.warning(
-                    "Error requesting favorites from %s: %s", speaker.soco, err
-                )
-            else:
-                # Prefer this SoCo instance next update
-                discovered.move_to_end(uid, last=False)
-                break
+        # Polled update_id values do not match event_id values
+        # Each speaker can return a different polled update_id
+        last_poll_id = self.last_polled_ids.get(soco.uid)
+        if last_poll_id and new_favorites.update_id <= last_poll_id:
+            # Skip updates already processed
+            return False
+        self.last_polled_ids[soco.uid] = new_favorites.update_id
 
-        if new_favorites is None:
-            _LOGGER.error("Could not reach any speakers to update favorites")
-            return
+        _LOGGER.debug(
+            "Processing favorites update_id %s for %s (was: %s)",
+            new_favorites.update_id,
+            soco,
+            last_poll_id,
+        )
 
         self._favorites = []
         for fav in new_favorites:
@@ -89,9 +130,11 @@ class SonosFavorites:
             except SoCoException as ex:
                 # Skip unknown types
                 _LOGGER.error("Unhandled favorite '%s': %s", fav.title, ex)
+
         _LOGGER.debug(
-            "Cached %s favorites for household %s",
+            "Cached %s favorites for household %s using %s",
             len(self._favorites),
             self.household_id,
+            soco,
         )
-        dispatcher_send(self.hass, f"{SONOS_HOUSEHOLD_UPDATED}-{self.household_id}")
+        return True

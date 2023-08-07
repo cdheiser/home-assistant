@@ -2,14 +2,15 @@
 import logging
 
 import pylitejet
-from serial import SerialException
 import voluptuous as vol
 
 from homeassistant.config_entries import SOURCE_IMPORT, ConfigEntry
-from homeassistant.const import CONF_PORT
-from homeassistant.core import HomeAssistant
+from homeassistant.const import CONF_PORT, EVENT_HOMEASSISTANT_STOP
+from homeassistant.core import DOMAIN as HOMEASSISTANT_DOMAIN, Event, HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
 import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers.issue_registry import IssueSeverity, async_create_issue
+from homeassistant.helpers.typing import ConfigType
 
 from .const import CONF_EXCLUDE_NAMES, CONF_INCLUDE_SWITCHES, DOMAIN, PLATFORMS
 
@@ -34,7 +35,7 @@ CONFIG_SCHEMA = vol.Schema(
 )
 
 
-def setup(hass, config):
+async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Set up the LiteJet component."""
     if DOMAIN in config and not hass.config_entries.async_entries(DOMAIN):
         # No config entry exists and configuration.yaml config exists, trigger the import flow.
@@ -42,6 +43,20 @@ def setup(hass, config):
             hass.config_entries.flow.async_init(
                 DOMAIN, context={"source": SOURCE_IMPORT}, data=config[DOMAIN]
             )
+        )
+        async_create_issue(
+            hass,
+            HOMEASSISTANT_DOMAIN,
+            f"deprecated_yaml_{DOMAIN}",
+            breaks_in_ha_version="2024.2.0",
+            is_fixable=False,
+            issue_domain=DOMAIN,
+            severity=IssueSeverity.WARNING,
+            translation_key="deprecated_yaml",
+            translation_placeholders={
+                "domain": DOMAIN,
+                "integration_title": "LiteJet",
+            },
         )
     return True
 
@@ -51,24 +66,38 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     port = entry.data[CONF_PORT]
 
     try:
-        system = pylitejet.LiteJet(port)
-    except SerialException as ex:
-        _LOGGER.error("Error connecting to the LiteJet MCP at %s", port, exc_info=ex)
-        raise ConfigEntryNotReady from ex
+        system = await pylitejet.open(port)
+    except pylitejet.LiteJetError as exc:
+        raise ConfigEntryNotReady from exc
+
+    def handle_connected_changed(connected: bool, reason: str) -> None:
+        if connected:
+            _LOGGER.info("Connected")
+        else:
+            _LOGGER.warning("Disconnected %s", reason)
+
+    system.on_connected_changed(handle_connected_changed)
+
+    async def handle_stop(event: Event) -> None:
+        await system.close()
+
+    entry.async_on_unload(
+        hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, handle_stop)
+    )
 
     hass.data[DOMAIN] = system
 
-    hass.config_entries.async_setup_platforms(entry, PLATFORMS)
+    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     return True
 
 
-async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry):
+async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a LiteJet config entry."""
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
     if unload_ok:
-        hass.data[DOMAIN].close()
+        await hass.data[DOMAIN].close()
         hass.data.pop(DOMAIN)
 
     return unload_ok

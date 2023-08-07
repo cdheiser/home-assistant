@@ -2,13 +2,17 @@
 from ipaddress import ip_address, ip_network
 from unittest.mock import Mock, patch
 
+from hass_nabucasa import remote
 import pytest
 import voluptuous as vol
 
 from homeassistant import auth
 from homeassistant.auth import auth_store
 from homeassistant.auth.providers import trusted_networks as tn_auth
-from homeassistant.data_entry_flow import RESULT_TYPE_ABORT, RESULT_TYPE_CREATE_ENTRY
+from homeassistant.components.http import CONF_TRUSTED_PROXIES, CONF_USE_X_FORWARDED_FOR
+from homeassistant.core import HomeAssistant
+from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.setup import async_setup_component
 
 
 @pytest.fixture
@@ -112,7 +116,33 @@ def manager_bypass_login(hass, store, provider_bypass_login):
     )
 
 
-async def test_trusted_networks_credentials(manager, provider):
+async def test_config_schema():
+    """Test CONFIG_SCHEMA."""
+    # Valid configuration
+    tn_auth.CONFIG_SCHEMA(
+        {
+            "type": "trusted_networks",
+            "trusted_networks": ["192.168.0.1"],
+            "trusted_users": {
+                "192.168.0.1": [
+                    "a1ab982744b64757bf80515589258924",
+                    {"group": "system-group"},
+                ]
+            },
+        }
+    )
+    # Wrong user id format
+    with pytest.raises(vol.Invalid):
+        tn_auth.CONFIG_SCHEMA(
+            {
+                "type": "trusted_networks",
+                "trusted_networks": ["192.168.0.1"],
+                "trusted_users": {"192.168.0.1": ["abcde"]},
+            }
+        )
+
+
+async def test_trusted_networks_credentials(manager, provider) -> None:
     """Test trusted_networks credentials related functions."""
     owner = await manager.async_create_user("test-owner")
     tn_owner_cred = await provider.async_get_or_create_credentials({"user": owner.id})
@@ -129,7 +159,7 @@ async def test_trusted_networks_credentials(manager, provider):
         await provider.async_get_or_create_credentials({"user": "invalid-user"})
 
 
-async def test_validate_access(provider):
+async def test_validate_access(provider) -> None:
     """Test validate access from trusted networks."""
     provider.async_validate_access(ip_address("192.168.0.1"))
     provider.async_validate_access(ip_address("192.168.128.10"))
@@ -144,7 +174,51 @@ async def test_validate_access(provider):
         provider.async_validate_access(ip_address("2001:db8::ff00:42:8329"))
 
 
-async def test_validate_refresh_token(provider):
+async def test_validate_access_proxy(hass: HomeAssistant, provider) -> None:
+    """Test validate access from trusted networks are blocked from proxy."""
+
+    await async_setup_component(
+        hass,
+        "http",
+        {
+            "http": {
+                CONF_TRUSTED_PROXIES: ["192.168.128.0/31", "fd00::1"],
+                CONF_USE_X_FORWARDED_FOR: True,
+            }
+        },
+    )
+    provider.async_validate_access(ip_address("192.168.128.2"))
+    provider.async_validate_access(ip_address("fd00::2"))
+    with pytest.raises(tn_auth.InvalidAuthError):
+        provider.async_validate_access(ip_address("192.168.128.0"))
+    with pytest.raises(tn_auth.InvalidAuthError):
+        provider.async_validate_access(ip_address("192.168.128.1"))
+    with pytest.raises(tn_auth.InvalidAuthError):
+        provider.async_validate_access(ip_address("fd00::1"))
+
+
+async def test_validate_access_cloud(hass: HomeAssistant, provider) -> None:
+    """Test validate access from trusted networks are blocked from cloud."""
+    await async_setup_component(
+        hass,
+        "http",
+        {
+            "http": {
+                CONF_TRUSTED_PROXIES: ["192.168.128.0/31", "fd00::1"],
+                CONF_USE_X_FORWARDED_FOR: True,
+            }
+        },
+    )
+    hass.config.components.add("cloud")
+
+    provider.async_validate_access(ip_address("192.168.128.2"))
+
+    remote.is_cloud_request.set(True)
+    with pytest.raises(tn_auth.InvalidAuthError):
+        provider.async_validate_access(ip_address("192.168.128.2"))
+
+
+async def test_validate_refresh_token(provider) -> None:
     """Verify re-validation of refresh token."""
     with patch.object(provider, "async_validate_access") as mock:
         with pytest.raises(tn_auth.InvalidAuthError):
@@ -154,7 +228,7 @@ async def test_validate_refresh_token(provider):
         mock.assert_called_once_with(ip_address("127.0.0.1"))
 
 
-async def test_login_flow(manager, provider):
+async def test_login_flow(manager, provider) -> None:
     """Test login flow."""
     owner = await manager.async_create_user("test-owner")
     user = await manager.async_create_user("test-user")
@@ -162,7 +236,7 @@ async def test_login_flow(manager, provider):
     # not from trusted network
     flow = await provider.async_login_flow({"ip_address": ip_address("127.0.0.1")})
     step = await flow.async_step_init()
-    assert step["type"] == RESULT_TYPE_ABORT
+    assert step["type"] == FlowResultType.ABORT
     assert step["reason"] == "not_allowed"
 
     # from trusted network, list users
@@ -177,11 +251,11 @@ async def test_login_flow(manager, provider):
 
     # login with valid user
     step = await flow.async_step_init({"user": user.id})
-    assert step["type"] == RESULT_TYPE_CREATE_ENTRY
+    assert step["type"] == FlowResultType.CREATE_ENTRY
     assert step["data"]["user"] == user.id
 
 
-async def test_trusted_users_login(manager_with_user, provider_with_user):
+async def test_trusted_users_login(manager_with_user, provider_with_user) -> None:
     """Test available user list changed per different IP."""
     owner = await manager_with_user.async_create_user("test-owner")
     sys_user = await manager_with_user.async_create_system_user(
@@ -201,7 +275,7 @@ async def test_trusted_users_login(manager_with_user, provider_with_user):
         {"ip_address": ip_address("127.0.0.1")}
     )
     step = await flow.async_step_init()
-    assert step["type"] == RESULT_TYPE_ABORT
+    assert step["type"] == FlowResultType.ABORT
     assert step["reason"] == "not_allowed"
 
     # from trusted network, list users intersect trusted_users
@@ -261,7 +335,7 @@ async def test_trusted_users_login(manager_with_user, provider_with_user):
         assert schema({"user": sys_user.id})
 
 
-async def test_trusted_group_login(manager_with_user, provider_with_user):
+async def test_trusted_group_login(manager_with_user, provider_with_user) -> None:
     """Test config trusted_user with group_id."""
     owner = await manager_with_user.async_create_user("test-owner")
     # create a user in user group
@@ -285,7 +359,7 @@ async def test_trusted_group_login(manager_with_user, provider_with_user):
         {"ip_address": ip_address("127.0.0.1")}
     )
     step = await flow.async_step_init()
-    assert step["type"] == RESULT_TYPE_ABORT
+    assert step["type"] == FlowResultType.ABORT
     assert step["reason"] == "not_allowed"
 
     # from trusted network, list users intersect trusted_users
@@ -314,7 +388,7 @@ async def test_trusted_group_login(manager_with_user, provider_with_user):
     assert schema({"user": user.id})
 
 
-async def test_bypass_login_flow(manager_bypass_login, provider_bypass_login):
+async def test_bypass_login_flow(manager_bypass_login, provider_bypass_login) -> None:
     """Test login flow can be bypass if only one user available."""
     owner = await manager_bypass_login.async_create_user("test-owner")
 
@@ -323,7 +397,7 @@ async def test_bypass_login_flow(manager_bypass_login, provider_bypass_login):
         {"ip_address": ip_address("127.0.0.1")}
     )
     step = await flow.async_step_init()
-    assert step["type"] == RESULT_TYPE_ABORT
+    assert step["type"] == FlowResultType.ABORT
     assert step["reason"] == "not_allowed"
 
     # from trusted network, only one available user, bypass the login flow
@@ -331,7 +405,7 @@ async def test_bypass_login_flow(manager_bypass_login, provider_bypass_login):
         {"ip_address": ip_address("192.168.0.1")}
     )
     step = await flow.async_step_init()
-    assert step["type"] == RESULT_TYPE_CREATE_ENTRY
+    assert step["type"] == FlowResultType.CREATE_ENTRY
     assert step["data"]["user"] == owner.id
 
     user = await manager_bypass_login.async_create_user("test-user")

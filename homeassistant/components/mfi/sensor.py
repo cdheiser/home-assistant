@@ -1,11 +1,17 @@
 """Support for Ubiquiti mFi sensors."""
+from __future__ import annotations
+
 import logging
 
 from mficlient.client import FailedToLogin, MFiClient
 import requests
 import voluptuous as vol
 
-from homeassistant.components.sensor import PLATFORM_SCHEMA, SensorEntity
+from homeassistant.components.sensor import (
+    PLATFORM_SCHEMA,
+    SensorDeviceClass,
+    SensorEntity,
+)
 from homeassistant.const import (
     CONF_HOST,
     CONF_PASSWORD,
@@ -15,9 +21,12 @@ from homeassistant.const import (
     CONF_VERIFY_SSL,
     STATE_OFF,
     STATE_ON,
-    TEMP_CELSIUS,
+    UnitOfTemperature,
 )
+from homeassistant.core import HomeAssistant
 import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -47,7 +56,12 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
 )
 
 
-def setup_platform(hass, config, add_entities, discovery_info=None):
+def setup_platform(
+    hass: HomeAssistant,
+    config: ConfigType,
+    add_entities: AddEntitiesCallback,
+    discovery_info: DiscoveryInfoType | None = None,
+) -> None:
     """Set up mFi sensors."""
     host = config.get(CONF_HOST)
     username = config.get(CONF_USERNAME)
@@ -63,7 +77,7 @@ def setup_platform(hass, config, add_entities, discovery_info=None):
         )
     except (FailedToLogin, requests.exceptions.ConnectionError) as ex:
         _LOGGER.error("Unable to connect to mFi: %s", str(ex))
-        return False
+        return
 
     add_entities(
         MfiSensor(port, hass)
@@ -83,11 +97,11 @@ class MfiSensor(SensorEntity):
 
     @property
     def name(self):
-        """Return the name of th sensor."""
+        """Return the name of the sensor."""
         return self._port.label
 
     @property
-    def state(self):
+    def native_value(self):
         """Return the state of the sensor."""
         try:
             tag = self._port.tag
@@ -101,21 +115,34 @@ class MfiSensor(SensorEntity):
         return round(self._port.value, digits)
 
     @property
-    def unit_of_measurement(self):
+    def device_class(self):
+        """Return the device class of the sensor."""
+        try:
+            tag = self._port.tag
+        except ValueError:
+            return None
+
+        if tag == "temperature":
+            return SensorDeviceClass.TEMPERATURE
+
+        return None
+
+    @property
+    def native_unit_of_measurement(self):
         """Return the unit of measurement of this entity, if any."""
         try:
             tag = self._port.tag
         except ValueError:
-            return "State"
+            return None
 
         if tag == "temperature":
-            return TEMP_CELSIUS
+            return UnitOfTemperature.CELSIUS
         if tag == "active_pwr":
             return "Watts"
         if self._port.model == "Input Digital":
-            return "State"
+            return None
         return tag
 
-    def update(self):
+    def update(self) -> None:
         """Get the latest data."""
         self._port.refresh()

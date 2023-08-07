@@ -1,18 +1,34 @@
 """Support for Home Assistant Cloud binary sensors."""
+from __future__ import annotations
+
 import asyncio
+from collections.abc import Callable
+from typing import Any
+
+from hass_nabucasa import Cloud
 
 from homeassistant.components.binary_sensor import (
-    DEVICE_CLASS_CONNECTIVITY,
+    BinarySensorDeviceClass,
     BinarySensorEntity,
 )
+from homeassistant.const import EntityCategory
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 
+from .client import CloudClient
 from .const import DISPATCHER_REMOTE_UPDATE, DOMAIN
 
 WAIT_UNTIL_CHANGE = 3
 
 
-async def async_setup_platform(hass, config, async_add_entities, discovery_info=None):
+async def async_setup_platform(
+    hass: HomeAssistant,
+    config: ConfigType,
+    async_add_entities: AddEntitiesCallback,
+    discovery_info: DiscoveryInfoType | None = None,
+) -> None:
     """Set up the cloud binary sensors."""
     if discovery_info is None:
         return
@@ -24,20 +40,16 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
 class CloudRemoteBinary(BinarySensorEntity):
     """Representation of an Cloud Remote UI Connection binary sensor."""
 
-    def __init__(self, cloud):
+    _attr_name = "Remote UI"
+    _attr_device_class = BinarySensorDeviceClass.CONNECTIVITY
+    _attr_should_poll = False
+    _attr_unique_id = "cloud-remote-ui-connectivity"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, cloud: Cloud[CloudClient]) -> None:
         """Initialize the binary sensor."""
         self.cloud = cloud
-        self._unsub_dispatcher = None
-
-    @property
-    def name(self) -> str:
-        """Return the name of the binary sensor, if any."""
-        return "Remote UI"
-
-    @property
-    def unique_id(self) -> str:
-        """Return a unique ID."""
-        return "cloud-remote-ui-connectivity"
+        self._unsub_dispatcher: Callable[[], None] | None = None
 
     @property
     def is_on(self) -> bool:
@@ -45,24 +57,14 @@ class CloudRemoteBinary(BinarySensorEntity):
         return self.cloud.remote.is_connected
 
     @property
-    def device_class(self) -> str:
-        """Return the class of this device, from component DEVICE_CLASSES."""
-        return DEVICE_CLASS_CONNECTIVITY
-
-    @property
     def available(self) -> bool:
         """Return True if entity is available."""
         return self.cloud.remote.certificate is not None
 
-    @property
-    def should_poll(self) -> bool:
-        """Return True if entity has to be polled for state."""
-        return False
-
-    async def async_added_to_hass(self):
+    async def async_added_to_hass(self) -> None:
         """Register update dispatcher."""
 
-        async def async_state_update(data):
+        async def async_state_update(data: Any) -> None:
             """Update callback."""
             await asyncio.sleep(WAIT_UNTIL_CHANGE)
             self.async_write_ha_state()
@@ -71,7 +73,7 @@ class CloudRemoteBinary(BinarySensorEntity):
             self.hass, DISPATCHER_REMOTE_UPDATE, async_state_update
         )
 
-    async def async_will_remove_from_hass(self):
+    async def async_will_remove_from_hass(self) -> None:
         """Register update dispatcher."""
         if self._unsub_dispatcher is not None:
             self._unsub_dispatcher()

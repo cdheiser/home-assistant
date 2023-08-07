@@ -1,5 +1,6 @@
 """Support gathering system information of hosts which are running netdata."""
-from datetime import timedelta
+from __future__ import annotations
+
 import logging
 
 from netdata import Netdata
@@ -15,14 +16,13 @@ from homeassistant.const import (
     CONF_RESOURCES,
     PERCENTAGE,
 )
+from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import PlatformNotReady
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
 import homeassistant.helpers.config_validation as cv
-from homeassistant.util import Throttle
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 
 _LOGGER = logging.getLogger(__name__)
-
-MIN_TIME_BETWEEN_UPDATES = timedelta(minutes=1)
 
 CONF_DATA_GROUP = "data_group"
 CONF_ELEMENT = "element"
@@ -53,22 +53,26 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
 )
 
 
-async def async_setup_platform(hass, config, async_add_entities, discovery_info=None):
+async def async_setup_platform(
+    hass: HomeAssistant,
+    config: ConfigType,
+    async_add_entities: AddEntitiesCallback,
+    discovery_info: DiscoveryInfoType | None = None,
+) -> None:
     """Set up the Netdata sensor."""
 
-    name = config.get(CONF_NAME)
-    host = config.get(CONF_HOST)
-    port = config.get(CONF_PORT)
-    resources = config.get(CONF_RESOURCES)
+    name = config[CONF_NAME]
+    host = config[CONF_HOST]
+    port = config[CONF_PORT]
+    resources = config[CONF_RESOURCES]
 
-    session = async_get_clientsession(hass)
-    netdata = NetdataData(Netdata(host, hass.loop, session, port=port))
+    netdata = NetdataData(Netdata(host, port=port, timeout=20.0))
     await netdata.async_update()
 
     if netdata.api.metrics is None:
         raise PlatformNotReady
 
-    dev = []
+    dev: list[SensorEntity] = []
     for entry, data in resources.items():
         icon = data[CONF_ICON]
         sensor = data[CONF_DATA_GROUP]
@@ -117,7 +121,7 @@ class NetdataSensor(SensorEntity):
         return f"{self._name} {self._sensor_name}"
 
     @property
-    def unit_of_measurement(self):
+    def native_unit_of_measurement(self):
         """Return the unit the value is expressed in."""
         return self._unit_of_measurement
 
@@ -127,16 +131,16 @@ class NetdataSensor(SensorEntity):
         return self._icon
 
     @property
-    def state(self):
+    def native_value(self):
         """Return the state of the resources."""
         return self._state
 
     @property
-    def available(self):
+    def available(self) -> bool:
         """Could the resource be accessed during the last update call."""
         return self.netdata.available
 
-    async def async_update(self):
+    async def async_update(self) -> None:
         """Get the latest data from Netdata REST API."""
         await self.netdata.async_update()
         resource_data = self.netdata.api.metrics.get(self._sensor)
@@ -162,7 +166,7 @@ class NetdataAlarms(SensorEntity):
         return f"{self._name} Alarms"
 
     @property
-    def state(self):
+    def native_value(self):
         """Return the state of the resources."""
         return self._state
 
@@ -178,11 +182,11 @@ class NetdataAlarms(SensorEntity):
         return "mdi:crosshairs-question"
 
     @property
-    def available(self):
+    def available(self) -> bool:
         """Could the resource be accessed during the last update call."""
         return self.netdata.available
 
-    async def async_update(self):
+    async def async_update(self) -> None:
         """Get the latest alarms from Netdata REST API."""
         await self.netdata.async_update()
         alarms = self.netdata.api.alarms["alarms"]
@@ -215,7 +219,6 @@ class NetdataData:
         self.api = api
         self.available = True
 
-    @Throttle(MIN_TIME_BETWEEN_UPDATES)
     async def async_update(self):
         """Get the latest data from the Netdata REST API."""
 

@@ -9,7 +9,7 @@ from homeassistant.components.arcam_fmj.const import DEFAULT_NAME
 from homeassistant.components.arcam_fmj.media_player import ArcamFmj
 from homeassistant.const import CONF_HOST, CONF_PORT
 
-from tests.common import MockConfigEntry
+from tests.common import MockConfigEntry, MockEntityPlatform
 
 MOCK_HOST = "127.0.0.1"
 MOCK_PORT = 50000
@@ -44,6 +44,7 @@ def state_1_fixture(client):
     state.get_source_list.return_value = []
     state.get_incoming_audio_format.return_value = (0, 0)
     state.get_mute.return_value = None
+    state.get_decode_modes.return_value = []
     return state
 
 
@@ -58,6 +59,7 @@ def state_2_fixture(client):
     state.get_source_list.return_value = []
     state.get_incoming_audio_format.return_value = (0, 0)
     state.get_mute.return_value = None
+    state.get_decode_modes.return_value = []
     return state
 
 
@@ -73,6 +75,7 @@ def player_fixture(hass, state):
     player = ArcamFmj(MOCK_NAME, state, MOCK_UUID)
     player.entity_id = MOCK_ENTITY_ID
     player.hass = hass
+    player.platform = MockEntityPlatform(hass)
     player.async_write_ha_state = Mock()
     return player
 

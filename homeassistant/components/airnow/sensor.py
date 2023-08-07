@@ -1,119 +1,156 @@
 """Support for the AirNow sensor service."""
-from homeassistant.components.sensor import SensorEntity
+from __future__ import annotations
+
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Any
+
+from homeassistant.components.sensor import (
+    SensorDeviceClass,
+    SensorEntity,
+    SensorEntityDescription,
+    SensorStateClass,
+)
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
-    ATTR_ATTRIBUTION,
-    ATTR_DEVICE_CLASS,
-    ATTR_ICON,
     CONCENTRATION_MICROGRAMS_PER_CUBIC_METER,
     CONCENTRATION_PARTS_PER_MILLION,
 )
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.device_registry import DeviceEntryType
+from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.typing import StateType
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
+from . import AirNowDataUpdateCoordinator
 from .const import (
     ATTR_API_AQI,
     ATTR_API_AQI_DESCRIPTION,
     ATTR_API_AQI_LEVEL,
     ATTR_API_O3,
     ATTR_API_PM25,
+    ATTR_API_STATION,
+    ATTR_API_STATION_LATITUDE,
+    ATTR_API_STATION_LONGITUDE,
+    DEFAULT_NAME,
     DOMAIN,
-    SENSOR_AQI_ATTR_DESCR,
-    SENSOR_AQI_ATTR_LEVEL,
 )
 
 ATTRIBUTION = "Data provided by AirNow"
 
-ATTR_LABEL = "label"
-ATTR_UNIT = "unit"
-
 PARALLEL_UPDATES = 1
 
-SENSOR_TYPES = {
-    ATTR_API_AQI: {
-        ATTR_DEVICE_CLASS: None,
-        ATTR_ICON: "mdi:blur",
-        ATTR_LABEL: ATTR_API_AQI,
-        ATTR_UNIT: "aqi",
-    },
-    ATTR_API_PM25: {
-        ATTR_DEVICE_CLASS: None,
-        ATTR_ICON: "mdi:blur",
-        ATTR_LABEL: ATTR_API_PM25,
-        ATTR_UNIT: CONCENTRATION_MICROGRAMS_PER_CUBIC_METER,
-    },
-    ATTR_API_O3: {
-        ATTR_DEVICE_CLASS: None,
-        ATTR_ICON: "mdi:blur",
-        ATTR_LABEL: ATTR_API_O3,
-        ATTR_UNIT: CONCENTRATION_PARTS_PER_MILLION,
-    },
-}
+ATTR_DESCR = "description"
+ATTR_LEVEL = "level"
+ATTR_STATION = "reporting_station"
 
 
-async def async_setup_entry(hass, config_entry, async_add_entities):
+@dataclass
+class AirNowEntityDescriptionMixin:
+    """Mixin for required keys."""
+
+    value_fn: Callable[[Any], StateType]
+    extra_state_attributes_fn: Callable[[Any], dict[str, str]] | None
+
+
+@dataclass
+class AirNowEntityDescription(SensorEntityDescription, AirNowEntityDescriptionMixin):
+    """Describes Airnow sensor entity."""
+
+
+SENSOR_TYPES: tuple[AirNowEntityDescription, ...] = (
+    AirNowEntityDescription(
+        key=ATTR_API_AQI,
+        icon="mdi:blur",
+        state_class=SensorStateClass.MEASUREMENT,
+        device_class=SensorDeviceClass.AQI,
+        value_fn=lambda data: data.get(ATTR_API_AQI),
+        extra_state_attributes_fn=lambda data: {
+            ATTR_DESCR: data[ATTR_API_AQI_DESCRIPTION],
+            ATTR_LEVEL: data[ATTR_API_AQI_LEVEL],
+        },
+    ),
+    AirNowEntityDescription(
+        key=ATTR_API_PM25,
+        icon="mdi:blur",
+        native_unit_of_measurement=CONCENTRATION_MICROGRAMS_PER_CUBIC_METER,
+        state_class=SensorStateClass.MEASUREMENT,
+        device_class=SensorDeviceClass.PM25,
+        value_fn=lambda data: data.get(ATTR_API_PM25),
+        extra_state_attributes_fn=None,
+    ),
+    AirNowEntityDescription(
+        key=ATTR_API_O3,
+        translation_key="o3",
+        icon="mdi:blur",
+        native_unit_of_measurement=CONCENTRATION_PARTS_PER_MILLION,
+        state_class=SensorStateClass.MEASUREMENT,
+        value_fn=lambda data: data.get(ATTR_API_O3),
+        extra_state_attributes_fn=None,
+    ),
+    AirNowEntityDescription(
+        key=ATTR_API_STATION,
+        translation_key="station",
+        icon="mdi:blur",
+        value_fn=lambda data: data.get(ATTR_API_STATION),
+        extra_state_attributes_fn=lambda data: {
+            "lat": data[ATTR_API_STATION_LATITUDE],
+            "long": data[ATTR_API_STATION_LONGITUDE],
+        },
+    ),
+)
+
+
+async def async_setup_entry(
+    hass: HomeAssistant,
+    config_entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
     """Set up AirNow sensor entities based on a config entry."""
     coordinator = hass.data[DOMAIN][config_entry.entry_id]
 
-    sensors = []
-    for sensor in SENSOR_TYPES:
-        sensors.append(AirNowSensor(coordinator, sensor))
+    entities = [AirNowSensor(coordinator, description) for description in SENSOR_TYPES]
 
-    async_add_entities(sensors, False)
+    async_add_entities(entities, False)
 
 
-class AirNowSensor(CoordinatorEntity, SensorEntity):
+class AirNowSensor(CoordinatorEntity[AirNowDataUpdateCoordinator], SensorEntity):
     """Define an AirNow sensor."""
 
-    def __init__(self, coordinator, kind):
+    _attr_attribution = ATTRIBUTION
+    _attr_has_entity_name = True
+
+    entity_description: AirNowEntityDescription
+
+    def __init__(
+        self,
+        coordinator: AirNowDataUpdateCoordinator,
+        description: AirNowEntityDescription,
+    ) -> None:
         """Initialize."""
         super().__init__(coordinator)
-        self.kind = kind
-        self._device_class = None
-        self._state = None
-        self._icon = None
-        self._unit_of_measurement = None
-        self._attrs = {ATTR_ATTRIBUTION: ATTRIBUTION}
+        self.entity_description = description
+        self._attr_unique_id = (
+            f"{coordinator.latitude}-{coordinator.longitude}-{description.key.lower()}"
+        )
+        self._attr_device_info = DeviceInfo(
+            entry_type=DeviceEntryType.SERVICE,
+            identifiers={(DOMAIN, self._attr_unique_id)},
+            manufacturer=DEFAULT_NAME,
+            name=DEFAULT_NAME,
+        )
 
     @property
-    def name(self):
-        """Return the name."""
-        return f"AirNow {SENSOR_TYPES[self.kind][ATTR_LABEL]}"
-
-    @property
-    def state(self):
+    def native_value(self) -> StateType:
         """Return the state."""
-        self._state = self.coordinator.data[self.kind]
-        return self._state
+        return self.entity_description.value_fn(self.coordinator.data)
 
     @property
-    def extra_state_attributes(self):
+    def extra_state_attributes(self) -> dict[str, str] | None:
         """Return the state attributes."""
-        if self.kind == ATTR_API_AQI:
-            self._attrs[SENSOR_AQI_ATTR_DESCR] = self.coordinator.data[
-                ATTR_API_AQI_DESCRIPTION
-            ]
-            self._attrs[SENSOR_AQI_ATTR_LEVEL] = self.coordinator.data[
-                ATTR_API_AQI_LEVEL
-            ]
-
-        return self._attrs
-
-    @property
-    def icon(self):
-        """Return the icon."""
-        self._icon = SENSOR_TYPES[self.kind][ATTR_ICON]
-        return self._icon
-
-    @property
-    def device_class(self):
-        """Return the device_class."""
-        return SENSOR_TYPES[self.kind][ATTR_DEVICE_CLASS]
-
-    @property
-    def unique_id(self):
-        """Return a unique_id for this entity."""
-        return f"{self.coordinator.latitude}-{self.coordinator.longitude}-{self.kind.lower()}"
-
-    @property
-    def unit_of_measurement(self):
-        """Return the unit the value is expressed in."""
-        return SENSOR_TYPES[self.kind][ATTR_UNIT]
+        if self.entity_description.extra_state_attributes_fn:
+            return self.entity_description.extra_state_attributes_fn(
+                self.coordinator.data
+            )
+        return None

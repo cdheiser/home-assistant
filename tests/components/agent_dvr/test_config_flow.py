@@ -1,4 +1,6 @@
 """Tests for the Agent DVR config flow."""
+import pytest
+
 from homeassistant import data_entry_flow
 from homeassistant.components.agent_dvr import config_flow
 from homeassistant.components.agent_dvr.const import SERVER_URL
@@ -11,6 +13,8 @@ from . import init_integration
 from tests.common import load_fixture
 from tests.test_util.aiohttp import AiohttpClientMocker
 
+pytestmark = pytest.mark.usefixtures("mock_setup_entry")
+
 
 async def test_show_user_form(hass: HomeAssistant) -> None:
     """Test that the user set up form is served."""
@@ -20,7 +24,7 @@ async def test_show_user_form(hass: HomeAssistant) -> None:
     )
 
     assert result["step_id"] == "user"
-    assert result["type"] == data_entry_flow.RESULT_TYPE_FORM
+    assert result["type"] == data_entry_flow.FlowResultType.FORM
 
 
 async def test_user_device_exists_abort(
@@ -35,10 +39,12 @@ async def test_user_device_exists_abort(
         data={CONF_HOST: "example.local", CONF_PORT: 8090},
     )
 
-    assert result["type"] == data_entry_flow.RESULT_TYPE_ABORT
+    assert result["type"] == data_entry_flow.FlowResultType.ABORT
 
 
-async def test_connection_error(hass: HomeAssistant, aioclient_mock) -> None:
+async def test_connection_error(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
     """Test we show user form on Agent connection error."""
 
     aioclient_mock.get("http://example.local:8090/command.cgi?cmd=getStatus", text="")
@@ -49,13 +55,13 @@ async def test_connection_error(hass: HomeAssistant, aioclient_mock) -> None:
         data={CONF_HOST: "example.local", CONF_PORT: 8090},
     )
 
-    assert result["errors"] == {"base": "cannot_connect"}
+    assert result["errors"]["base"] == "cannot_connect"
     assert result["step_id"] == "user"
-    assert result["type"] == data_entry_flow.RESULT_TYPE_FORM
+    assert result["type"] == data_entry_flow.FlowResultType.FORM
 
 
 async def test_full_user_flow_implementation(
-    hass: HomeAssistant, aioclient_mock
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
 ) -> None:
     """Test the full manual user flow from start to finish."""
     aioclient_mock.get(
@@ -76,7 +82,7 @@ async def test_full_user_flow_implementation(
     )
 
     assert result["step_id"] == "user"
-    assert result["type"] == data_entry_flow.RESULT_TYPE_FORM
+    assert result["type"] == data_entry_flow.FlowResultType.FORM
 
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"], user_input={CONF_HOST: "example.local", CONF_PORT: 8090}
@@ -86,7 +92,7 @@ async def test_full_user_flow_implementation(
     assert result["data"][CONF_PORT] == 8090
     assert result["data"][SERVER_URL] == "http://example.local:8090/"
     assert result["title"] == "DESKTOP"
-    assert result["type"] == data_entry_flow.RESULT_TYPE_CREATE_ENTRY
+    assert result["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
 
     entries = hass.config_entries.async_entries(config_flow.DOMAIN)
     assert entries[0].unique_id == "c0715bba-c2d0-48ef-9e3e-bc81c9ea4447"

@@ -1,7 +1,6 @@
 """Flo device object."""
 from __future__ import annotations
 
-import asyncio
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -28,8 +27,8 @@ class FloDeviceDataUpdateCoordinator(DataUpdateCoordinator):
         self._flo_location_id: str = location_id
         self._flo_device_id: str = device_id
         self._manufacturer: str = "Flo by Moen"
-        self._device_information: dict[str, Any] | None = None
-        self._water_usage: dict[str, Any] | None = None
+        self._device_information: dict[str, Any] = {}
+        self._water_usage: dict[str, Any] = {}
         super().__init__(
             hass,
             LOGGER,
@@ -40,11 +39,11 @@ class FloDeviceDataUpdateCoordinator(DataUpdateCoordinator):
     async def _async_update_data(self):
         """Update data via library."""
         try:
-            async with timeout(10):
-                await asyncio.gather(
-                    *[self._update_device(), self._update_consumption_data()]
-                )
-        except (RequestError) as error:
+            async with timeout(20):
+                await self.send_presence_ping()
+                await self._update_device()
+                await self._update_consumption_data()
+        except RequestError as error:
             raise UpdateFailed(error) from error
 
     @property
@@ -187,6 +186,10 @@ class FloDeviceDataUpdateCoordinator(DataUpdateCoordinator):
     def battery_level(self) -> float:
         """Return the battery level for battery-powered device, e.g. leak detectors."""
         return self._device_information["battery"]["level"]
+
+    async def send_presence_ping(self):
+        """Send Flo a presence ping."""
+        await self.api_client.presence.ping()
 
     async def async_set_mode_home(self):
         """Set the Flo location to home mode."""

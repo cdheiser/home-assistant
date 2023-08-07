@@ -6,7 +6,7 @@ from typing import Any
 
 from aiohttp.client_exceptions import ClientConnectorError
 from async_timeout import timeout
-from gios import ApiError, Gios, InvalidSensorsData, NoStationError
+from gios import ApiError, Gios, InvalidSensorsDataError, NoStationError
 import voluptuous as vol
 
 from homeassistant import config_entries
@@ -14,14 +14,7 @@ from homeassistant.const import CONF_NAME
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .const import API_TIMEOUT, CONF_STATION_ID, DEFAULT_NAME, DOMAIN
-
-DATA_SCHEMA = vol.Schema(
-    {
-        vol.Required(CONF_STATION_ID): int,
-        vol.Optional(CONF_NAME, default=DEFAULT_NAME): str,
-    }
-)
+from .const import API_TIMEOUT, CONF_STATION_ID, DOMAIN
 
 
 class GiosFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
@@ -44,21 +37,31 @@ class GiosFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
 
                 websession = async_get_clientsession(self.hass)
 
-                with timeout(API_TIMEOUT):
+                async with timeout(API_TIMEOUT):
                     gios = Gios(user_input[CONF_STATION_ID], websession)
                     await gios.async_update()
 
+                assert gios.station_name is not None
                 return self.async_create_entry(
-                    title=user_input[CONF_STATION_ID],
+                    title=gios.station_name,
                     data=user_input,
                 )
             except (ApiError, ClientConnectorError, asyncio.TimeoutError):
                 errors["base"] = "cannot_connect"
             except NoStationError:
                 errors[CONF_STATION_ID] = "wrong_station_id"
-            except InvalidSensorsData:
+            except InvalidSensorsDataError:
                 errors[CONF_STATION_ID] = "invalid_sensors_data"
 
         return self.async_show_form(
-            step_id="user", data_schema=DATA_SCHEMA, errors=errors
+            step_id="user",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_STATION_ID): int,
+                    vol.Optional(
+                        CONF_NAME, default=self.hass.config.location_name
+                    ): str,
+                }
+            ),
+            errors=errors,
         )

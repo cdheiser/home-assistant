@@ -2,25 +2,24 @@
 from __future__ import annotations
 
 from collections import OrderedDict
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from contextlib import suppress
 import logging
 import os
 from pathlib import Path
 import re
 import shutil
 from types import ModuleType
-from typing import Any, Callable
+from typing import Any
+from urllib.parse import urlparse
 
 from awesomeversion import AwesomeVersion
 import voluptuous as vol
 from voluptuous.humanize import humanize_error
 
-from homeassistant import auth
-from homeassistant.auth import (
-    mfa_modules as auth_mfa_modules,
-    providers as auth_providers,
-)
-from homeassistant.const import (
+from . import auth
+from .auth import mfa_modules as auth_mfa_modules, providers as auth_providers
+from .const import (
     ATTR_ASSUMED_STATE,
     ATTR_FRIENDLY_NAME,
     ATTR_HIDDEN,
@@ -28,6 +27,8 @@ from homeassistant.const import (
     CONF_ALLOWLIST_EXTERNAL_URLS,
     CONF_AUTH_MFA_MODULES,
     CONF_AUTH_PROVIDERS,
+    CONF_COUNTRY,
+    CONF_CURRENCY,
     CONF_CUSTOMIZE,
     CONF_CUSTOMIZE_DOMAIN,
     CONF_CUSTOMIZE_GLOB,
@@ -35,6 +36,7 @@ from homeassistant.const import (
     CONF_EXTERNAL_URL,
     CONF_ID,
     CONF_INTERNAL_URL,
+    CONF_LANGUAGE,
     CONF_LATITUDE,
     CONF_LEGACY_TEMPLATES,
     CONF_LONGITUDE,
@@ -45,25 +47,25 @@ from homeassistant.const import (
     CONF_TIME_ZONE,
     CONF_TYPE,
     CONF_UNIT_SYSTEM,
-    CONF_UNIT_SYSTEM_IMPERIAL,
     LEGACY_CONF_WHITELIST_EXTERNAL_DIRS,
-    TEMP_CELSIUS,
     __version__,
 )
-from homeassistant.core import DOMAIN as CONF_CORE, SOURCE_YAML, HomeAssistant, callback
-from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers import config_per_platform, extract_domain_configs
-import homeassistant.helpers.config_validation as cv
-from homeassistant.helpers.entity_values import EntityValues
-from homeassistant.helpers.typing import ConfigType
-from homeassistant.loader import Integration, IntegrationNotFound
-from homeassistant.requirements import (
-    RequirementsNotFound,
-    async_get_integration_with_requirements,
+from .core import DOMAIN as CONF_CORE, ConfigSource, HomeAssistant, callback
+from .exceptions import HomeAssistantError
+from .generated.currencies import HISTORIC_CURRENCIES
+from .helpers import (
+    config_per_platform,
+    config_validation as cv,
+    extract_domain_configs,
+    issue_registry as ir,
 )
-from homeassistant.util.package import is_docker_env
-from homeassistant.util.unit_system import IMPERIAL_SYSTEM, METRIC_SYSTEM
-from homeassistant.util.yaml import SECRET_YAML, Secrets, load_yaml
+from .helpers.entity_values import EntityValues
+from .helpers.typing import ConfigType
+from .loader import ComponentProtocol, Integration, IntegrationNotFound
+from .requirements import RequirementsNotFound, async_get_integration_with_requirements
+from .util.package import is_docker_env
+from .util.unit_system import get_unit_system, validate_unit_system
+from .util.yaml import SECRET_YAML, Secrets, load_yaml
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -75,7 +77,6 @@ VERSION_FILE = ".HA_VERSION"
 CONFIG_DIR_NAME = ".homeassistant"
 DATA_CUSTOMIZE = "hass_customize"
 
-GROUP_CONFIG_PATH = "groups.yaml"
 AUTOMATION_CONFIG_PATH = "automations.yaml"
 SCRIPT_CONFIG_PATH = "scripts.yaml"
 SCENE_CONFIG_PATH = "scenes.yaml"
@@ -88,14 +89,13 @@ INTEGRATION_LOAD_EXCEPTIONS = (
 )
 
 DEFAULT_CONFIG = f"""
-# Configure a default setup of Home Assistant (frontend, api, etc)
+# Loads default set of integrations. Do not remove.
 default_config:
 
-# Text to speech
-tts:
-  - platform: google_translate
+# Load frontend themes from the themes folder
+frontend:
+  themes: !include_dir_merge_named themes
 
-group: !include {GROUP_CONFIG_PATH}
 automation: !include {AUTOMATION_CONFIG_PATH}
 script: !include {SCRIPT_CONFIG_PATH}
 scene: !include {SCENE_CONFIG_PATH}
@@ -160,6 +160,19 @@ def _no_duplicate_auth_mfa_module(
     return configs
 
 
+def _filter_bad_internal_external_urls(conf: dict) -> dict:
+    """Filter internal/external URL with a path."""
+    for key in CONF_INTERNAL_URL, CONF_EXTERNAL_URL:
+        if key in conf and urlparse(conf[key]).path not in ("", "/"):
+            # We warn but do not fix, because if this was incorrectly configured,
+            # adjusting this value might impact security.
+            _LOGGER.warning(
+                "Invalid %s set. It's not allowed to have a path (/bla)", key
+            )
+
+    return conf
+
+
 PACKAGES_CONFIG_SCHEMA = cv.schema_with_slug_keys(  # Package names are slugs
     vol.Schema({cv.string: vol.Any(dict, list, None)})  # Component config
 )
@@ -187,65 +200,119 @@ CUSTOMIZE_CONFIG_SCHEMA = vol.Schema(
     }
 )
 
-CORE_CONFIG_SCHEMA = CUSTOMIZE_CONFIG_SCHEMA.extend(
-    {
-        CONF_NAME: vol.Coerce(str),
-        CONF_LATITUDE: cv.latitude,
-        CONF_LONGITUDE: cv.longitude,
-        CONF_ELEVATION: vol.Coerce(int),
-        vol.Optional(CONF_TEMPERATURE_UNIT): cv.temperature_unit,
-        CONF_UNIT_SYSTEM: cv.unit_system,
-        CONF_TIME_ZONE: cv.time_zone,
-        vol.Optional(CONF_INTERNAL_URL): cv.url,
-        vol.Optional(CONF_EXTERNAL_URL): cv.url,
-        vol.Optional(CONF_ALLOWLIST_EXTERNAL_DIRS): vol.All(
-            cv.ensure_list, [vol.IsDir()]  # pylint: disable=no-value-for-parameter
-        ),
-        vol.Optional(LEGACY_CONF_WHITELIST_EXTERNAL_DIRS): vol.All(
-            cv.ensure_list, [vol.IsDir()]  # pylint: disable=no-value-for-parameter
-        ),
-        vol.Optional(CONF_ALLOWLIST_EXTERNAL_URLS): vol.All(cv.ensure_list, [cv.url]),
-        vol.Optional(CONF_PACKAGES, default={}): PACKAGES_CONFIG_SCHEMA,
-        vol.Optional(CONF_AUTH_PROVIDERS): vol.All(
-            cv.ensure_list,
-            [
-                auth_providers.AUTH_PROVIDER_SCHEMA.extend(
-                    {
-                        CONF_TYPE: vol.NotIn(
-                            ["insecure_example"],
-                            "The insecure_example auth provider"
-                            " is for testing only.",
-                        )
-                    }
-                )
-            ],
-            _no_duplicate_auth_provider,
-        ),
-        vol.Optional(CONF_AUTH_MFA_MODULES): vol.All(
-            cv.ensure_list,
-            [
-                auth_mfa_modules.MULTI_FACTOR_AUTH_MODULE_SCHEMA.extend(
-                    {
-                        CONF_TYPE: vol.NotIn(
-                            ["insecure_example"],
-                            "The insecure_example mfa module is for testing only.",
-                        )
-                    }
-                )
-            ],
-            _no_duplicate_auth_mfa_module,
-        ),
-        # pylint: disable=no-value-for-parameter
-        vol.Optional(CONF_MEDIA_DIRS): cv.schema_with_slug_keys(vol.IsDir()),
-        vol.Optional(CONF_LEGACY_TEMPLATES): cv.boolean,
-    }
+
+def _raise_issue_if_historic_currency(hass: HomeAssistant, currency: str) -> None:
+    if currency not in HISTORIC_CURRENCIES:
+        ir.async_delete_issue(hass, "homeassistant", "historic_currency")
+        return
+
+    ir.async_create_issue(
+        hass,
+        "homeassistant",
+        "historic_currency",
+        is_fixable=False,
+        learn_more_url="homeassistant://config/general",
+        severity=ir.IssueSeverity.WARNING,
+        translation_key="historic_currency",
+        translation_placeholders={"currency": currency},
+    )
+
+
+def _raise_issue_if_no_country(hass: HomeAssistant, country: str | None) -> None:
+    if country is not None:
+        ir.async_delete_issue(hass, "homeassistant", "country_not_configured")
+        return
+
+    ir.async_create_issue(
+        hass,
+        "homeassistant",
+        "country_not_configured",
+        is_fixable=False,
+        learn_more_url="homeassistant://config/general",
+        severity=ir.IssueSeverity.WARNING,
+        translation_key="country_not_configured",
+    )
+
+
+def _validate_currency(data: Any) -> Any:
+    try:
+        return cv.currency(data)
+    except vol.InInvalid:
+        with suppress(vol.InInvalid):
+            currency = cv.historic_currency(data)
+            return currency
+        raise
+
+
+CORE_CONFIG_SCHEMA = vol.All(
+    CUSTOMIZE_CONFIG_SCHEMA.extend(
+        {
+            CONF_NAME: vol.Coerce(str),
+            CONF_LATITUDE: cv.latitude,
+            CONF_LONGITUDE: cv.longitude,
+            CONF_ELEVATION: vol.Coerce(int),
+            vol.Remove(CONF_TEMPERATURE_UNIT): cv.temperature_unit,
+            CONF_UNIT_SYSTEM: validate_unit_system,
+            CONF_TIME_ZONE: cv.time_zone,
+            vol.Optional(CONF_INTERNAL_URL): cv.url,
+            vol.Optional(CONF_EXTERNAL_URL): cv.url,
+            vol.Optional(CONF_ALLOWLIST_EXTERNAL_DIRS): vol.All(
+                cv.ensure_list, [vol.IsDir()]  # pylint: disable=no-value-for-parameter
+            ),
+            vol.Optional(LEGACY_CONF_WHITELIST_EXTERNAL_DIRS): vol.All(
+                cv.ensure_list, [vol.IsDir()]  # pylint: disable=no-value-for-parameter
+            ),
+            vol.Optional(CONF_ALLOWLIST_EXTERNAL_URLS): vol.All(
+                cv.ensure_list, [cv.url]
+            ),
+            vol.Optional(CONF_PACKAGES, default={}): PACKAGES_CONFIG_SCHEMA,
+            vol.Optional(CONF_AUTH_PROVIDERS): vol.All(
+                cv.ensure_list,
+                [
+                    auth_providers.AUTH_PROVIDER_SCHEMA.extend(
+                        {
+                            CONF_TYPE: vol.NotIn(
+                                ["insecure_example"],
+                                (
+                                    "The insecure_example auth provider"
+                                    " is for testing only."
+                                ),
+                            )
+                        }
+                    )
+                ],
+                _no_duplicate_auth_provider,
+            ),
+            vol.Optional(CONF_AUTH_MFA_MODULES): vol.All(
+                cv.ensure_list,
+                [
+                    auth_mfa_modules.MULTI_FACTOR_AUTH_MODULE_SCHEMA.extend(
+                        {
+                            CONF_TYPE: vol.NotIn(
+                                ["insecure_example"],
+                                "The insecure_example mfa module is for testing only.",
+                            )
+                        }
+                    )
+                ],
+                _no_duplicate_auth_mfa_module,
+            ),
+            # pylint: disable-next=no-value-for-parameter
+            vol.Optional(CONF_MEDIA_DIRS): cv.schema_with_slug_keys(vol.IsDir()),
+            vol.Optional(CONF_LEGACY_TEMPLATES): cv.boolean,
+            vol.Optional(CONF_CURRENCY): _validate_currency,
+            vol.Optional(CONF_COUNTRY): cv.country,
+            vol.Optional(CONF_LANGUAGE): cv.language,
+        }
+    ),
+    _filter_bad_internal_external_urls,
 )
 
 
 def get_default_config_dir() -> str:
     """Put together the default configuration directory based on the OS."""
-    data_dir = os.getenv("APPDATA") if os.name == "nt" else os.path.expanduser("~")
-    return os.path.join(data_dir, CONFIG_DIR_NAME)  # type: ignore
+    data_dir = os.path.expanduser("~")
+    return os.path.join(data_dir, CONFIG_DIR_NAME)
 
 
 async def async_ensure_config_exists(hass: HomeAssistant) -> bool:
@@ -259,7 +326,7 @@ async def async_ensure_config_exists(hass: HomeAssistant) -> bool:
     if os.path.isfile(config_path):
         return True
 
-    print(
+    print(  # noqa: T201
         "Unable to find configuration. Creating default one in", hass.config.config_dir
     )
     return await async_create_default_config(hass)
@@ -270,6 +337,7 @@ async def async_create_default_config(hass: HomeAssistant) -> bool:
 
     Return if creation was successful.
     """
+    assert hass.config.config_dir
     return await hass.async_add_executor_job(
         _write_default_config, hass.config.config_dir
     )
@@ -280,7 +348,6 @@ def _write_default_config(config_dir: str) -> bool:
     config_path = os.path.join(config_dir, YAML_CONFIG_FILE)
     secret_path = os.path.join(config_dir, SECRET_YAML)
     version_path = os.path.join(config_dir, VERSION_FILE)
-    group_yaml_path = os.path.join(config_dir, GROUP_CONFIG_PATH)
     automation_yaml_path = os.path.join(config_dir, AUTOMATION_CONFIG_PATH)
     script_yaml_path = os.path.join(config_dir, SCRIPT_CONFIG_PATH)
     scene_yaml_path = os.path.join(config_dir, SCENE_CONFIG_PATH)
@@ -288,36 +355,32 @@ def _write_default_config(config_dir: str) -> bool:
     # Writing files with YAML does not create the most human readable results
     # So we're hard coding a YAML template.
     try:
-        with open(config_path, "wt") as config_file:
+        with open(config_path, "w", encoding="utf8") as config_file:
             config_file.write(DEFAULT_CONFIG)
 
         if not os.path.isfile(secret_path):
-            with open(secret_path, "wt") as secret_file:
+            with open(secret_path, "w", encoding="utf8") as secret_file:
                 secret_file.write(DEFAULT_SECRETS)
 
-        with open(version_path, "wt") as version_file:
+        with open(version_path, "w", encoding="utf8") as version_file:
             version_file.write(__version__)
 
-        if not os.path.isfile(group_yaml_path):
-            with open(group_yaml_path, "wt"):
-                pass
-
         if not os.path.isfile(automation_yaml_path):
-            with open(automation_yaml_path, "wt") as automation_file:
+            with open(automation_yaml_path, "w", encoding="utf8") as automation_file:
                 automation_file.write("[]")
 
         if not os.path.isfile(script_yaml_path):
-            with open(script_yaml_path, "wt"):
+            with open(script_yaml_path, "w", encoding="utf8"):
                 pass
 
         if not os.path.isfile(scene_yaml_path):
-            with open(scene_yaml_path, "wt"):
+            with open(scene_yaml_path, "w", encoding="utf8"):
                 pass
 
         return True
 
     except OSError:
-        print("Unable to create default configuration file", config_path)
+        print("Unable to create default configuration file", config_path)  # noqa: T201
         return False
 
 
@@ -377,7 +440,7 @@ def process_ha_config_upgrade(hass: HomeAssistant) -> None:
     version_path = hass.config.path(VERSION_FILE)
 
     try:
-        with open(version_path) as inp:
+        with open(version_path, encoding="utf8") as inp:
             conf_version = inp.readline().strip()
     except FileNotFoundError:
         # Last version to not have this file
@@ -409,7 +472,7 @@ def process_ha_config_upgrade(hass: HomeAssistant) -> None:
             _LOGGER.info("Migrating google tts to google_translate tts")
             config_raw = config_raw.replace(TTS_PRE_92, TTS_92)
             try:
-                with open(config_path, "wt", encoding="utf-8") as config_file:
+                with open(config_path, "w", encoding="utf-8") as config_file:
                     config_file.write(config_raw)
             except OSError:
                 _LOGGER.exception("Migrating to google_translate tts failed")
@@ -421,7 +484,7 @@ def process_ha_config_upgrade(hass: HomeAssistant) -> None:
         if os.path.isdir(lib_path):
             shutil.rmtree(lib_path)
 
-    with open(version_path, "wt") as outp:
+    with open(version_path, "w", encoding="utf8") as outp:
         outp.write(__version__)
 
 
@@ -491,9 +554,7 @@ async def async_process_ha_core_config(hass: HomeAssistant, config: dict) -> Non
 
     # Only load auth during startup.
     if not hasattr(hass, "auth"):
-        auth_conf = config.get(CONF_AUTH_PROVIDERS)
-
-        if auth_conf is None:
+        if (auth_conf := config.get(CONF_AUTH_PROVIDERS)) is None:
             auth_conf = [{"type": "homeassistant"}]
 
         mfa_conf = config.get(
@@ -511,7 +572,7 @@ async def async_process_ha_core_config(hass: HomeAssistant, config: dict) -> Non
 
     if any(
         k in config
-        for k in [
+        for k in (
             CONF_LATITUDE,
             CONF_LONGITUDE,
             CONF_NAME,
@@ -520,9 +581,12 @@ async def async_process_ha_core_config(hass: HomeAssistant, config: dict) -> Non
             CONF_UNIT_SYSTEM,
             CONF_EXTERNAL_URL,
             CONF_INTERNAL_URL,
-        ]
+            CONF_CURRENCY,
+            CONF_COUNTRY,
+            CONF_LANGUAGE,
+        )
     ):
-        hac.config_source = SOURCE_YAML
+        hac.config_source = ConfigSource.YAML
 
     for key, attr in (
         (CONF_LATITUDE, "latitude"),
@@ -533,9 +597,15 @@ async def async_process_ha_core_config(hass: HomeAssistant, config: dict) -> Non
         (CONF_EXTERNAL_URL, "external_url"),
         (CONF_MEDIA_DIRS, "media_dirs"),
         (CONF_LEGACY_TEMPLATES, "legacy_templates"),
+        (CONF_CURRENCY, "currency"),
+        (CONF_COUNTRY, "country"),
+        (CONF_LANGUAGE, "language"),
     ):
         if key in config:
             setattr(hac, attr, config[key])
+
+    _raise_issue_if_historic_currency(hass, hass.config.currency)
+    _raise_issue_if_no_country(hass, hass.config.country)
 
     if CONF_TIME_ZONE in config:
         hac.set_time_zone(config[CONF_TIME_ZONE])
@@ -575,9 +645,7 @@ async def async_process_ha_core_config(hass: HomeAssistant, config: dict) -> Non
     cust_glob = OrderedDict(config[CONF_CUSTOMIZE_GLOB])
 
     for name, pkg in config[CONF_PACKAGES].items():
-        pkg_cust = pkg.get(CONF_CORE)
-
-        if pkg_cust is None:
+        if (pkg_cust := pkg.get(CONF_CORE)) is None:
             continue
 
         try:
@@ -593,22 +661,7 @@ async def async_process_ha_core_config(hass: HomeAssistant, config: dict) -> Non
     hass.data[DATA_CUSTOMIZE] = EntityValues(cust_exact, cust_domain, cust_glob)
 
     if CONF_UNIT_SYSTEM in config:
-        if config[CONF_UNIT_SYSTEM] == CONF_UNIT_SYSTEM_IMPERIAL:
-            hac.units = IMPERIAL_SYSTEM
-        else:
-            hac.units = METRIC_SYSTEM
-    elif CONF_TEMPERATURE_UNIT in config:
-        unit = config[CONF_TEMPERATURE_UNIT]
-        hac.units = METRIC_SYSTEM if unit == TEMP_CELSIUS else IMPERIAL_SYSTEM
-        _LOGGER.warning(
-            "Found deprecated temperature unit in core "
-            "configuration expected unit system. Replace '%s: %s' "
-            "with '%s: %s'",
-            CONF_TEMPERATURE_UNIT,
-            unit,
-            CONF_UNIT_SYSTEM,
-            hac.units.name,
-        )
+        hac.units = get_unit_system(config[CONF_UNIT_SYSTEM])
 
 
 def _log_pkg_error(package: str, component: str, config: dict, message: str) -> None:
@@ -624,12 +677,12 @@ def _log_pkg_error(package: str, component: str, config: dict, message: str) -> 
     _LOGGER.error(message)
 
 
-def _identify_config_schema(module: ModuleType) -> str | None:
+def _identify_config_schema(module: ComponentProtocol) -> str | None:
     """Extract the schema and identify list or dict based."""
-    if not isinstance(module.CONFIG_SCHEMA, vol.Schema):  # type: ignore
+    if not isinstance(module.CONFIG_SCHEMA, vol.Schema):
         return None
 
-    schema = module.CONFIG_SCHEMA.schema  # type: ignore
+    schema = module.CONFIG_SCHEMA.schema
 
     if isinstance(schema, vol.All):
         for subschema in schema.validators:
@@ -640,7 +693,7 @@ def _identify_config_schema(module: ModuleType) -> str | None:
             return None
 
     try:
-        key = next(k for k in schema if k == module.DOMAIN)  # type: ignore
+        key = next(k for k in schema if k == module.DOMAIN)
     except (TypeError, AttributeError, StopIteration):
         return None
     except Exception:  # pylint: disable=broad-except
@@ -650,8 +703,8 @@ def _identify_config_schema(module: ModuleType) -> str | None:
     if hasattr(key, "default") and not isinstance(
         key.default, vol.schema_builder.Undefined
     ):
-        default_value = module.CONFIG_SCHEMA({module.DOMAIN: key.default()})[  # type: ignore
-            module.DOMAIN  # type: ignore
+        default_value = module.CONFIG_SCHEMA({module.DOMAIN: key.default()})[
+            module.DOMAIN
         ]
 
         if isinstance(default_value, dict):
@@ -708,7 +761,7 @@ async def merge_packages_config(
                 continue
             # If component name is given with a trailing description, remove it
             # when looking for component
-            domain = comp_name.split(" ")[0]
+            domain = comp_name.partition(" ")[0]
 
             try:
                 integration = await async_get_integration_with_requirements(
@@ -719,7 +772,22 @@ async def merge_packages_config(
                 _log_pkg_error(pack_name, comp_name, config, str(ex))
                 continue
 
-            merge_list = hasattr(component, "PLATFORM_SCHEMA")
+            try:
+                config_platform: ModuleType | None = integration.get_platform("config")
+                # Test if config platform has a config validator
+                if not hasattr(config_platform, "async_validate_config"):
+                    config_platform = None
+            except ImportError:
+                config_platform = None
+
+            merge_list = False
+
+            # If integration has a custom config validator, it needs to provide a hint.
+            if config_platform is not None:
+                merge_list = config_platform.PACKAGE_MERGE_HINT == "list"
+
+            if not merge_list:
+                merge_list = hasattr(component, "PLATFORM_SCHEMA")
 
             if not merge_list and hasattr(component, "CONFIG_SCHEMA"):
                 merge_list = _identify_config_schema(component) == "list"
@@ -792,8 +860,8 @@ async def async_process_component_config(  # noqa: C901
         config_validator, "async_validate_config"
     ):
         try:
-            return await config_validator.async_validate_config(  # type: ignore
-                hass, config
+            return (  # type: ignore[no-any-return]
+                await config_validator.async_validate_config(hass, config)
             )
         except (vol.Invalid, HomeAssistantError) as ex:
             async_log_exception(ex, domain, config, hass, integration.documentation)
@@ -805,7 +873,7 @@ async def async_process_component_config(  # noqa: C901
     # No custom config validator, proceed with schema validation
     if hasattr(component, "CONFIG_SCHEMA"):
         try:
-            return component.CONFIG_SCHEMA(config)  # type: ignore
+            return component.CONFIG_SCHEMA(config)  # type: ignore[no-any-return]
         except vol.Invalid as ex:
             async_log_exception(ex, domain, config, hass, integration.documentation)
             return None
@@ -830,7 +898,10 @@ async def async_process_component_config(  # noqa: C901
             continue
         except Exception:  # pylint: disable=broad-except
             _LOGGER.exception(
-                "Unknown error validating %s platform config with %s component platform schema",
+                (
+                    "Unknown error validating %s platform config with %s component"
+                    " platform schema"
+                ),
                 p_name,
                 domain,
             )
@@ -858,7 +929,7 @@ async def async_process_component_config(  # noqa: C901
         # Validate platform specific schema
         if hasattr(platform, "PLATFORM_SCHEMA"):
             try:
-                p_validated = platform.PLATFORM_SCHEMA(p_config)  # type: ignore
+                p_validated = platform.PLATFORM_SCHEMA(p_config)
             except vol.Invalid as ex:
                 async_log_exception(
                     ex,
@@ -870,7 +941,10 @@ async def async_process_component_config(  # noqa: C901
                 continue
             except Exception:  # pylint: disable=broad-except
                 _LOGGER.exception(
-                    "Unknown error validating config for %s platform for %s component with PLATFORM_SCHEMA",
+                    (
+                        "Unknown error validating config for %s platform for %s"
+                        " component with PLATFORM_SCHEMA"
+                    ),
                     p_name,
                     domain,
                 )
@@ -887,7 +961,7 @@ async def async_process_component_config(  # noqa: C901
 
 
 @callback
-def config_without_domain(config: dict, domain: str) -> dict:
+def config_without_domain(config: ConfigType, domain: str) -> ConfigType:
     """Return a config with all configuration for a domain removed."""
     filter_keys = extract_domain_configs(config, domain)
     return {key: value for key, value in config.items() if key not in filter_keys}
@@ -898,8 +972,8 @@ async def async_check_ha_config_file(hass: HomeAssistant) -> str | None:
 
     This method is a coroutine.
     """
-    # pylint: disable=import-outside-toplevel
-    import homeassistant.helpers.check_config as check_config
+    # pylint: disable-next=import-outside-toplevel
+    from .helpers import check_config
 
     res = await check_config.async_check_ha_config_file(hass)
 
@@ -916,12 +990,10 @@ def async_notify_setup_error(
 
     This method must be run in the event loop.
     """
-    # pylint: disable=import-outside-toplevel
-    from homeassistant.components import persistent_notification
+    # pylint: disable-next=import-outside-toplevel
+    from .components import persistent_notification
 
-    errors = hass.data.get(DATA_PERSISTENT_ERRORS)
-
-    if errors is None:
+    if (errors := hass.data.get(DATA_PERSISTENT_ERRORS)) is None:
         errors = hass.data[DATA_PERSISTENT_ERRORS] = {}
 
     errors[component] = errors.get(component) or display_link
@@ -929,8 +1001,9 @@ def async_notify_setup_error(
     message = "The following integrations and platforms could not be set up:\n\n"
 
     for name, link in errors.items():
+        show_logs = f"[Show logs](/config/logs?filter={name})"
         part = f"[{name}]({link})" if link else name
-        message += f" - {part}\n"
+        message += f" - {part} ({show_logs})\n"
 
     message += "\nPlease check your config and [logs](/config/logs)."
 

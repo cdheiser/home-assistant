@@ -6,18 +6,28 @@
       }
     },
     "abort": {
-      "single_instance_allowed": "[%key:common::config_flow::abort::single_instance_allowed%]",
-      "wrong_server_id": "Server ID is not valid"
+      "single_instance_allowed": "[%key:common::config_flow::abort::single_instance_allowed%]"
     }
   },
   "options": {
     "step": {
       "init": {
         "data": {
-          "scan_interval": "Update frequency (minutes)",
-          "manual": "Disable auto update",
           "server_name": "Select test server"
         }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "ping": {
+        "name": "Ping"
+      },
+      "download": {
+        "name": "Download"
+      },
+      "upload": {
+        "name": "Upload"
       }
     }
   }

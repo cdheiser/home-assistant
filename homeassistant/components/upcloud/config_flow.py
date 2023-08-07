@@ -55,14 +55,10 @@ class UpCloudConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 step_id="user", user_input=user_input, errors=errors
             )
 
+        self._abort_if_unique_id_configured(
+            updates={CONF_PASSWORD: user_input[CONF_PASSWORD]}
+        )
         return self.async_create_entry(title=user_input[CONF_USERNAME], data=user_input)
-
-    async def async_step_import(self, user_input: dict[str, Any]) -> FlowResult:
-        """Handle import initiated flow."""
-        await self.async_set_unique_id(user_input[CONF_USERNAME])
-        self._abort_if_unique_id_configured()
-
-        return await self.async_step_user(user_input=user_input)
 
     @callback
     def _async_show_form(

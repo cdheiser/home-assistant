@@ -1,163 +1,247 @@
 """Platform for solarlog sensors."""
-import logging
-from urllib.parse import ParseResult, urlparse
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import datetime
 
-from requests.exceptions import HTTPError, Timeout
-from sunwatcher.solarlog.solarlog import SolarLog
+from homeassistant.components.sensor import (
+    SensorDeviceClass,
+    SensorEntity,
+    SensorEntityDescription,
+    SensorStateClass,
+)
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import (
+    PERCENTAGE,
+    UnitOfElectricPotential,
+    UnitOfEnergy,
+    UnitOfPower,
+)
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.util.dt import as_local
 
-from homeassistant.components.sensor import SensorEntity
-from homeassistant.const import CONF_HOST
-from homeassistant.util import Throttle
-
-from .const import DOMAIN, SCAN_INTERVAL, SENSOR_TYPES
-
-_LOGGER = logging.getLogger(__name__)
+from . import SolarlogData
+from .const import DOMAIN
 
 
-async def async_setup_platform(hass, config, async_add_entities, discovery_info=None):
-    """Set up the solarlog platform."""
-    _LOGGER.warning(
-        "Configuration of the solarlog platform in configuration.yaml is deprecated "
-        "in Home Assistant 0.119. Please remove entry from your configuration"
+@dataclass
+class SolarLogSensorEntityDescription(SensorEntityDescription):
+    """Describes Solarlog sensor entity."""
+
+    value: Callable[[float | int], float] | Callable[[datetime], datetime] | None = None
+
+
+SENSOR_TYPES: tuple[SolarLogSensorEntityDescription, ...] = (
+    SolarLogSensorEntityDescription(
+        key="time",
+        translation_key="last_update",
+        device_class=SensorDeviceClass.TIMESTAMP,
+        value=as_local,
+    ),
+    SolarLogSensorEntityDescription(
+        key="power_ac",
+        translation_key="power_ac",
+        icon="mdi:solar-power",
+        native_unit_of_measurement=UnitOfPower.WATT,
+        device_class=SensorDeviceClass.POWER,
+        state_class=SensorStateClass.MEASUREMENT,
+    ),
+    SolarLogSensorEntityDescription(
+        key="power_dc",
+        translation_key="power_dc",
+        icon="mdi:solar-power",
+        native_unit_of_measurement=UnitOfPower.WATT,
+        device_class=SensorDeviceClass.POWER,
+        state_class=SensorStateClass.MEASUREMENT,
+    ),
+    SolarLogSensorEntityDescription(
+        key="voltage_ac",
+        translation_key="voltage_ac",
+        native_unit_of_measurement=UnitOfElectricPotential.VOLT,
+        device_class=SensorDeviceClass.VOLTAGE,
+        state_class=SensorStateClass.MEASUREMENT,
+    ),
+    SolarLogSensorEntityDescription(
+        key="voltage_dc",
+        translation_key="voltage_dc",
+        native_unit_of_measurement=UnitOfElectricPotential.VOLT,
+        device_class=SensorDeviceClass.VOLTAGE,
+        state_class=SensorStateClass.MEASUREMENT,
+    ),
+    SolarLogSensorEntityDescription(
+        key="yield_day",
+        translation_key="yield_day",
+        icon="mdi:solar-power",
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        device_class=SensorDeviceClass.ENERGY,
+        value=lambda value: round(value / 1000, 3),
+    ),
+    SolarLogSensorEntityDescription(
+        key="yield_yesterday",
+        translation_key="yield_yesterday",
+        icon="mdi:solar-power",
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        device_class=SensorDeviceClass.ENERGY,
+        value=lambda value: round(value / 1000, 3),
+    ),
+    SolarLogSensorEntityDescription(
+        key="yield_month",
+        translation_key="yield_month",
+        icon="mdi:solar-power",
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        device_class=SensorDeviceClass.ENERGY,
+        value=lambda value: round(value / 1000, 3),
+    ),
+    SolarLogSensorEntityDescription(
+        key="yield_year",
+        translation_key="yield_year",
+        icon="mdi:solar-power",
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        device_class=SensorDeviceClass.ENERGY,
+        value=lambda value: round(value / 1000, 3),
+    ),
+    SolarLogSensorEntityDescription(
+        key="yield_total",
+        translation_key="yield_total",
+        icon="mdi:solar-power",
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        device_class=SensorDeviceClass.ENERGY,
+        state_class=SensorStateClass.TOTAL,
+        value=lambda value: round(value / 1000, 3),
+    ),
+    SolarLogSensorEntityDescription(
+        key="consumption_ac",
+        translation_key="consumption_ac",
+        native_unit_of_measurement=UnitOfPower.WATT,
+        device_class=SensorDeviceClass.POWER,
+        state_class=SensorStateClass.MEASUREMENT,
+    ),
+    SolarLogSensorEntityDescription(
+        key="consumption_day",
+        translation_key="consumption_day",
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        device_class=SensorDeviceClass.ENERGY,
+        value=lambda value: round(value / 1000, 3),
+    ),
+    SolarLogSensorEntityDescription(
+        key="consumption_yesterday",
+        translation_key="consumption_yesterday",
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        device_class=SensorDeviceClass.ENERGY,
+        value=lambda value: round(value / 1000, 3),
+    ),
+    SolarLogSensorEntityDescription(
+        key="consumption_month",
+        translation_key="consumption_month",
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        device_class=SensorDeviceClass.ENERGY,
+        value=lambda value: round(value / 1000, 3),
+    ),
+    SolarLogSensorEntityDescription(
+        key="consumption_year",
+        translation_key="consumption_year",
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        device_class=SensorDeviceClass.ENERGY,
+        value=lambda value: round(value / 1000, 3),
+    ),
+    SolarLogSensorEntityDescription(
+        key="consumption_total",
+        translation_key="consumption_total",
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        device_class=SensorDeviceClass.ENERGY,
+        state_class=SensorStateClass.TOTAL,
+        value=lambda value: round(value / 1000, 3),
+    ),
+    SolarLogSensorEntityDescription(
+        key="total_power",
+        translation_key="total_power",
+        icon="mdi:solar-power",
+        native_unit_of_measurement=UnitOfPower.WATT,
+        device_class=SensorDeviceClass.POWER,
+    ),
+    SolarLogSensorEntityDescription(
+        key="alternator_loss",
+        translation_key="alternator_loss",
+        icon="mdi:solar-power",
+        native_unit_of_measurement=UnitOfPower.WATT,
+        device_class=SensorDeviceClass.POWER,
+        state_class=SensorStateClass.MEASUREMENT,
+    ),
+    SolarLogSensorEntityDescription(
+        key="capacity",
+        translation_key="capacity",
+        icon="mdi:solar-power",
+        native_unit_of_measurement=PERCENTAGE,
+        device_class=SensorDeviceClass.POWER_FACTOR,
+        state_class=SensorStateClass.MEASUREMENT,
+        value=lambda value: round(value * 100, 1),
+    ),
+    SolarLogSensorEntityDescription(
+        key="efficiency",
+        translation_key="efficiency",
+        native_unit_of_measurement=PERCENTAGE,
+        device_class=SensorDeviceClass.POWER_FACTOR,
+        state_class=SensorStateClass.MEASUREMENT,
+        value=lambda value: round(value * 100, 1),
+    ),
+    SolarLogSensorEntityDescription(
+        key="power_available",
+        translation_key="power_available",
+        icon="mdi:solar-power",
+        native_unit_of_measurement=UnitOfPower.WATT,
+        device_class=SensorDeviceClass.POWER,
+        state_class=SensorStateClass.MEASUREMENT,
+    ),
+    SolarLogSensorEntityDescription(
+        key="usage",
+        translation_key="usage",
+        native_unit_of_measurement=PERCENTAGE,
+        device_class=SensorDeviceClass.POWER_FACTOR,
+        state_class=SensorStateClass.MEASUREMENT,
+        value=lambda value: round(value * 100, 1),
+    ),
+)
+
+
+async def async_setup_entry(
+    hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
+) -> None:
+    """Add solarlog entry."""
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    async_add_entities(
+        SolarlogSensor(coordinator, description) for description in SENSOR_TYPES
     )
 
 
-async def async_setup_entry(hass, entry, async_add_entities):
-    """Add solarlog entry."""
-    host_entry = entry.data[CONF_HOST]
-    device_name = entry.title
-
-    url = urlparse(host_entry, "http")
-    netloc = url.netloc or url.path
-    path = url.path if url.netloc else ""
-    url = ParseResult("http", netloc, path, *url[3:])
-    host = url.geturl()
-
-    try:
-        api = await hass.async_add_executor_job(SolarLog, host)
-        _LOGGER.debug("Connected to Solar-Log device, setting up entries")
-    except (OSError, HTTPError, Timeout):
-        _LOGGER.error(
-            "Could not connect to Solar-Log device at %s, check host ip address", host
-        )
-        return
-
-    # Create solarlog data service which will retrieve and update the data.
-    data = await hass.async_add_executor_job(SolarlogData, hass, api, host)
-
-    # Create a new sensor for each sensor type.
-    entities = []
-    for sensor_key in SENSOR_TYPES:
-        sensor = SolarlogSensor(entry.entry_id, device_name, sensor_key, data)
-        entities.append(sensor)
-
-    async_add_entities(entities, True)
-    return True
-
-
-class SolarlogSensor(SensorEntity):
+class SolarlogSensor(CoordinatorEntity[SolarlogData], SensorEntity):
     """Representation of a Sensor."""
 
-    def __init__(self, entry_id, device_name, sensor_key, data):
+    _attr_has_entity_name = True
+
+    entity_description: SolarLogSensorEntityDescription
+
+    def __init__(
+        self,
+        coordinator: SolarlogData,
+        description: SolarLogSensorEntityDescription,
+    ) -> None:
         """Initialize the sensor."""
-        self.device_name = device_name
-        self.sensor_key = sensor_key
-        self.data = data
-        self.entry_id = entry_id
-        self._state = None
-
-        self._json_key = SENSOR_TYPES[self.sensor_key][0]
-        self._label = SENSOR_TYPES[self.sensor_key][1]
-        self._unit_of_measurement = SENSOR_TYPES[self.sensor_key][2]
-        self._icon = SENSOR_TYPES[self.sensor_key][3]
-
-    @property
-    def unique_id(self):
-        """Return the unique id."""
-        return f"{self.entry_id}_{self.sensor_key}"
+        super().__init__(coordinator)
+        self.entity_description = description
+        self._attr_unique_id = f"{coordinator.unique_id}_{description.key}"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, coordinator.unique_id)},
+            manufacturer="Solar-Log",
+            name=coordinator.name,
+            configuration_url=coordinator.host,
+        )
 
     @property
-    def name(self):
-        """Return the name of the sensor."""
-        return f"{self.device_name} {self._label}"
-
-    @property
-    def unit_of_measurement(self):
-        """Return the state of the sensor."""
-        return self._unit_of_measurement
-
-    @property
-    def icon(self):
-        """Return the sensor icon."""
-        return self._icon
-
-    @property
-    def state(self):
-        """Return the state of the sensor."""
-        return self._state
-
-    @property
-    def device_info(self):
-        """Return the device information."""
-        return {
-            "identifiers": {(DOMAIN, self.entry_id)},
-            "name": self.device_name,
-            "manufacturer": "Solar-Log",
-        }
-
-    def update(self):
-        """Get the latest data from the sensor and update the state."""
-        self.data.update()
-        self._state = self.data.data[self._json_key]
-
-
-class SolarlogData:
-    """Get and update the latest data."""
-
-    def __init__(self, hass, api, host):
-        """Initialize the data object."""
-        self.api = api
-        self.hass = hass
-        self.host = host
-        self.update = Throttle(SCAN_INTERVAL)(self._update)
-        self.data = {}
-
-    def _update(self):
-        """Update the data from the SolarLog device."""
-        try:
-            self.api = SolarLog(self.host)
-            response = self.api.time
-            _LOGGER.debug(
-                "Connection to Solarlog successful. Retrieving latest Solarlog update of %s",
-                response,
-            )
-        except (OSError, Timeout, HTTPError):
-            _LOGGER.error("Connection error, Could not retrieve data, skipping update")
-            return
-
-        try:
-            self.data["TIME"] = self.api.time
-            self.data["powerAC"] = self.api.power_ac
-            self.data["powerDC"] = self.api.power_dc
-            self.data["voltageAC"] = self.api.voltage_ac
-            self.data["voltageDC"] = self.api.voltage_dc
-            self.data["yieldDAY"] = self.api.yield_day / 1000
-            self.data["yieldYESTERDAY"] = self.api.yield_yesterday / 1000
-            self.data["yieldMONTH"] = self.api.yield_month / 1000
-            self.data["yieldYEAR"] = self.api.yield_year / 1000
-            self.data["yieldTOTAL"] = self.api.yield_total / 1000
-            self.data["consumptionAC"] = self.api.consumption_ac
-            self.data["consumptionDAY"] = self.api.consumption_day / 1000
-            self.data["consumptionYESTERDAY"] = self.api.consumption_yesterday / 1000
-            self.data["consumptionMONTH"] = self.api.consumption_month / 1000
-            self.data["consumptionYEAR"] = self.api.consumption_year / 1000
-            self.data["consumptionTOTAL"] = self.api.consumption_total / 1000
-            self.data["totalPOWER"] = self.api.total_power
-            self.data["alternatorLOSS"] = self.api.alternator_loss
-            self.data["CAPACITY"] = round(self.api.capacity * 100, 0)
-            self.data["EFFICIENCY"] = round(self.api.efficiency * 100, 0)
-            self.data["powerAVAILABLE"] = self.api.power_available
-            self.data["USAGE"] = self.api.usage
-            _LOGGER.debug("Updated Solarlog overview data: %s", self.data)
-        except AttributeError:
-            _LOGGER.error("Missing details data in Solarlog response")
+    def native_value(self):
+        """Return the native sensor value."""
+        raw_attr = getattr(self.coordinator.data, self.entity_description.key)
+        if self.entity_description.value:
+            return self.entity_description.value(raw_attr)
+        return raw_attr

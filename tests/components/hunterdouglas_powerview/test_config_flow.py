@@ -5,23 +5,38 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from homeassistant import config_entries, setup
+from homeassistant import config_entries
+from homeassistant.components import dhcp, zeroconf
 from homeassistant.components.hunterdouglas_powerview.const import DOMAIN
+from homeassistant.core import HomeAssistant
 
 from tests.common import MockConfigEntry, load_fixture
 
-HOMEKIT_DISCOVERY_INFO = {
-    "name": "Hunter Douglas Powerview Hub._hap._tcp.local.",
-    "host": "1.2.3.4",
-    "properties": {"id": "AA::BB::CC::DD::EE::FF"},
-}
+HOMEKIT_DISCOVERY_INFO = zeroconf.ZeroconfServiceInfo(
+    host="1.2.3.4",
+    addresses=["1.2.3.4"],
+    hostname="mock_hostname",
+    name="Hunter Douglas Powerview Hub._hap._tcp.local.",
+    port=None,
+    properties={zeroconf.ATTR_PROPERTIES_ID: "AA::BB::CC::DD::EE::FF"},
+    type="mock_type",
+)
 
-ZEROCONF_DISCOVERY_INFO = {
-    "name": "Hunter Douglas Powerview Hub._powerview._tcp.local.",
-    "host": "1.2.3.4",
-}
+ZEROCONF_DISCOVERY_INFO = zeroconf.ZeroconfServiceInfo(
+    host="1.2.3.4",
+    addresses=["1.2.3.4"],
+    hostname="mock_hostname",
+    name="Hunter Douglas Powerview Hub._powerview._tcp.local.",
+    port=None,
+    properties={},
+    type="mock_type",
+)
 
-DHCP_DISCOVERY_INFO = {"hostname": "Hunter Douglas Powerview Hub", "ip": "1.2.3.4"}
+DHCP_DISCOVERY_INFO = dhcp.DhcpServiceInfo(
+    hostname="Hunter Douglas Powerview Hub",
+    ip="1.2.3.4",
+    macaddress="AA:BB:CC:DD:EE:FF",
+)
 
 DISCOVERY_DATA = [
     (
@@ -71,9 +86,9 @@ def _get_mock_powerview_fwversion(fwversion=None, get_resources=None):
     return mock_powerview_fwversion
 
 
-async def test_user_form(hass):
+async def test_user_form(hass: HomeAssistant) -> None:
     """Test we get the user form."""
-    await setup.async_setup_component(hass, "persistent_notification", {})
+
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": config_entries.SOURCE_USER}
     )
@@ -114,9 +129,9 @@ async def test_user_form(hass):
     assert result4["type"] == "abort"
 
 
-async def test_user_form_legacy(hass):
+async def test_user_form_legacy(hass: HomeAssistant) -> None:
     """Test we get the user form with a legacy device."""
-    await setup.async_setup_component(hass, "persistent_notification", {})
+
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": config_entries.SOURCE_USER}
     )
@@ -161,10 +176,11 @@ async def test_user_form_legacy(hass):
     assert result4["type"] == "abort"
 
 
-@pytest.mark.parametrize("source, discovery_info", DISCOVERY_DATA)
-async def test_form_homekit_and_dhcp_cannot_connect(hass, source, discovery_info):
+@pytest.mark.parametrize(("source", "discovery_info"), DISCOVERY_DATA)
+async def test_form_homekit_and_dhcp_cannot_connect(
+    hass: HomeAssistant, source, discovery_info
+) -> None:
     """Test we get the form with homekit and dhcp source."""
-    await setup.async_setup_component(hass, "persistent_notification", {})
 
     ignored_config_entry = MockConfigEntry(
         domain=DOMAIN, data={}, source=config_entries.SOURCE_IGNORE
@@ -188,10 +204,11 @@ async def test_form_homekit_and_dhcp_cannot_connect(hass, source, discovery_info
     assert result["reason"] == "cannot_connect"
 
 
-@pytest.mark.parametrize("source, discovery_info", DISCOVERY_DATA)
-async def test_form_homekit_and_dhcp(hass, source, discovery_info):
+@pytest.mark.parametrize(("source", "discovery_info"), DISCOVERY_DATA)
+async def test_form_homekit_and_dhcp(
+    hass: HomeAssistant, source, discovery_info
+) -> None:
     """Test we get the form with homekit and dhcp source."""
-    await setup.async_setup_component(hass, "persistent_notification", {})
 
     ignored_config_entry = MockConfigEntry(
         domain=DOMAIN, data={}, source=config_entries.SOURCE_IGNORE
@@ -242,9 +259,8 @@ async def test_form_homekit_and_dhcp(hass, source, discovery_info):
     assert result3["type"] == "abort"
 
 
-async def test_discovered_by_homekit_and_dhcp(hass):
+async def test_discovered_by_homekit_and_dhcp(hass: HomeAssistant) -> None:
     """Test we get the form with homekit and abort for dhcp source when we get both."""
-    await setup.async_setup_component(hass, "persistent_notification", {})
 
     mock_powerview_userdata = _get_mock_powerview_userdata()
     with patch(
@@ -274,7 +290,7 @@ async def test_discovered_by_homekit_and_dhcp(hass):
     assert result2["reason"] == "already_in_progress"
 
 
-async def test_form_cannot_connect(hass):
+async def test_form_cannot_connect(hass: HomeAssistant) -> None:
     """Test we handle cannot connect error."""
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": config_entries.SOURCE_USER}
@@ -296,7 +312,7 @@ async def test_form_cannot_connect(hass):
     assert result2["errors"] == {"base": "cannot_connect"}
 
 
-async def test_form_no_data(hass):
+async def test_form_no_data(hass: HomeAssistant) -> None:
     """Test we handle no data being returned from the hub."""
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": config_entries.SOURCE_USER}
@@ -316,7 +332,7 @@ async def test_form_no_data(hass):
     assert result2["errors"] == {"base": "unknown"}
 
 
-async def test_form_unknown_exception(hass):
+async def test_form_unknown_exception(hass: HomeAssistant) -> None:
     """Test we handle unknown exception."""
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": config_entries.SOURCE_USER}

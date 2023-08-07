@@ -1,42 +1,45 @@
 """The Sonarr component."""
 from __future__ import annotations
 
-from datetime import timedelta
-import logging
+from typing import Any
 
-from sonarr import Sonarr, SonarrAccessRestricted, SonarrError
+from aiopyarr.models.host_configuration import PyArrHostConfiguration
+from aiopyarr.sonarr_client import SonarrClient
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
-    ATTR_NAME,
     CONF_API_KEY,
     CONF_HOST,
     CONF_PORT,
     CONF_SSL,
+    CONF_URL,
     CONF_VERIFY_SSL,
+    Platform,
 )
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
-from homeassistant.helpers.entity import DeviceInfo, Entity
 
 from .const import (
-    ATTR_IDENTIFIERS,
-    ATTR_MANUFACTURER,
-    ATTR_SOFTWARE_VERSION,
     CONF_BASE_PATH,
     CONF_UPCOMING_DAYS,
     CONF_WANTED_MAX_ITEMS,
-    DATA_SONARR,
-    DATA_UNDO_UPDATE_LISTENER,
     DEFAULT_UPCOMING_DAYS,
     DEFAULT_WANTED_MAX_ITEMS,
     DOMAIN,
+    LOGGER,
+)
+from .coordinator import (
+    CalendarDataUpdateCoordinator,
+    CommandsDataUpdateCoordinator,
+    DiskSpaceDataUpdateCoordinator,
+    QueueDataUpdateCoordinator,
+    SeriesDataUpdateCoordinator,
+    SonarrDataUpdateCoordinator,
+    StatusDataUpdateCoordinator,
+    WantedDataUpdateCoordinator,
 )
 
-PLATFORMS = ["sensor"]
-SCAN_INTERVAL = timedelta(seconds=30)
-_LOGGER = logging.getLogger(__name__)
+PLATFORMS = [Platform.SENSOR]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -52,34 +55,59 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         }
         hass.config_entries.async_update_entry(entry, options=options)
 
-    sonarr = Sonarr(
-        host=entry.data[CONF_HOST],
-        port=entry.data[CONF_PORT],
-        api_key=entry.data[CONF_API_KEY],
-        base_path=entry.data[CONF_BASE_PATH],
-        session=async_get_clientsession(hass),
-        tls=entry.data[CONF_SSL],
+    host_configuration = PyArrHostConfiguration(
+        api_token=entry.data[CONF_API_KEY],
+        url=entry.data[CONF_URL],
         verify_ssl=entry.data[CONF_VERIFY_SSL],
     )
-
-    try:
-        await sonarr.update()
-    except SonarrAccessRestricted as err:
-        raise ConfigEntryAuthFailed(
-            "API Key is no longer valid. Please reauthenticate"
-        ) from err
-    except SonarrError as err:
-        raise ConfigEntryNotReady from err
-
-    undo_listener = entry.add_update_listener(_async_update_listener)
-
-    hass.data.setdefault(DOMAIN, {})
-    hass.data[DOMAIN][entry.entry_id] = {
-        DATA_SONARR: sonarr,
-        DATA_UNDO_UPDATE_LISTENER: undo_listener,
+    sonarr = SonarrClient(
+        host_configuration=host_configuration,
+        session=async_get_clientsession(hass),
+    )
+    entry.async_on_unload(entry.add_update_listener(_async_update_listener))
+    coordinators: dict[str, SonarrDataUpdateCoordinator[Any]] = {
+        "upcoming": CalendarDataUpdateCoordinator(hass, host_configuration, sonarr),
+        "commands": CommandsDataUpdateCoordinator(hass, host_configuration, sonarr),
+        "diskspace": DiskSpaceDataUpdateCoordinator(hass, host_configuration, sonarr),
+        "queue": QueueDataUpdateCoordinator(hass, host_configuration, sonarr),
+        "series": SeriesDataUpdateCoordinator(hass, host_configuration, sonarr),
+        "status": StatusDataUpdateCoordinator(hass, host_configuration, sonarr),
+        "wanted": WantedDataUpdateCoordinator(hass, host_configuration, sonarr),
     }
+    # Temporary, until we add diagnostic entities
+    _version = None
+    for coordinator in coordinators.values():
+        await coordinator.async_config_entry_first_refresh()
+        if isinstance(coordinator, StatusDataUpdateCoordinator):
+            _version = coordinator.data.version
+        coordinator.system_version = _version
+    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinators
+    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
-    hass.config_entries.async_setup_platforms(entry, PLATFORMS)
+    return True
+
+
+async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Migrate old entry."""
+    LOGGER.debug("Migrating from version %s", entry.version)
+
+    if entry.version == 1:
+        new_proto = "https" if entry.data[CONF_SSL] else "http"
+        new_host_port = f"{entry.data[CONF_HOST]}:{entry.data[CONF_PORT]}"
+
+        new_path = ""
+
+        if entry.data[CONF_BASE_PATH].rstrip("/") not in ("", "/", "/api"):
+            new_path = entry.data[CONF_BASE_PATH].rstrip("/")
+
+        data = {
+            **entry.data,
+            CONF_URL: f"{new_proto}://{new_host_port}{new_path}",
+        }
+        hass.config_entries.async_update_entry(entry, data=data)
+        entry.version = 2
+
+    LOGGER.info("Migration to version %s successful", entry.version)
 
     return True
 
@@ -87,8 +115,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
-
-    hass.data[DOMAIN][entry.entry_id][DATA_UNDO_UPDATE_LISTENER]()
 
     if unload_ok:
         hass.data[DOMAIN].pop(entry.entry_id)
@@ -99,54 +125,3 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Handle options update."""
     await hass.config_entries.async_reload(entry.entry_id)
-
-
-class SonarrEntity(Entity):
-    """Defines a base Sonarr entity."""
-
-    def __init__(
-        self,
-        *,
-        sonarr: Sonarr,
-        entry_id: str,
-        device_id: str,
-        name: str,
-        icon: str,
-        enabled_default: bool = True,
-    ) -> None:
-        """Initialize the Sonarr entity."""
-        self._entry_id = entry_id
-        self._device_id = device_id
-        self._enabled_default = enabled_default
-        self._icon = icon
-        self._name = name
-        self.sonarr = sonarr
-
-    @property
-    def name(self) -> str:
-        """Return the name of the entity."""
-        return self._name
-
-    @property
-    def icon(self) -> str:
-        """Return the mdi icon of the entity."""
-        return self._icon
-
-    @property
-    def entity_registry_enabled_default(self) -> bool:
-        """Return if the entity should be enabled when first added to the entity registry."""
-        return self._enabled_default
-
-    @property
-    def device_info(self) -> DeviceInfo | None:
-        """Return device information about the application."""
-        if self._device_id is None:
-            return None
-
-        return {
-            ATTR_IDENTIFIERS: {(DOMAIN, self._device_id)},
-            ATTR_NAME: "Activity Sensor",
-            ATTR_MANUFACTURER: "Sonarr",
-            ATTR_SOFTWARE_VERSION: self.sonarr.app.info.version,
-            "entry_type": "service",
-        }

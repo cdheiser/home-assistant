@@ -1,13 +1,18 @@
-"""Support for guages from flood monitoring API."""
+"""Support for gauges from flood monitoring API."""
 from datetime import timedelta
 import logging
 
 from aioeafm import get_station
 import async_timeout
 
-from homeassistant.components.sensor import SensorEntity
-from homeassistant.const import ATTR_ATTRIBUTION, LENGTH_METERS
+from homeassistant.components.sensor import SensorEntity, SensorStateClass
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import UnitOfLength
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.device_registry import DeviceEntryType
+from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import (
     CoordinatorEntity,
     DataUpdateCoordinator,
@@ -18,7 +23,7 @@ from .const import DOMAIN
 _LOGGER = logging.getLogger(__name__)
 
 UNIT_MAPPING = {
-    "http://qudt.org/1.1/vocab/unit#Meter": LENGTH_METERS,
+    "http://qudt.org/1.1/vocab/unit#Meter": UnitOfLength.METERS,
 }
 
 
@@ -31,7 +36,11 @@ def get_measures(station_data):
     return station_data["measures"]
 
 
-async def async_setup_entry(hass, config_entry, async_add_entities):
+async def async_setup_entry(
+    hass: HomeAssistant,
+    config_entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
     """Set up UK Flood Monitoring Sensors."""
     station_key = config_entry.data["station"]
     session = async_get_clientsession(hass=hass)
@@ -39,7 +48,7 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
     measurements = set()
 
     async def async_update_data():
-        # DataUpdateCoordinator will handle aiohttp ClientErrors and timouts
+        # DataUpdateCoordinator will handle aiohttp ClientErrors and timeouts
         async with async_timeout.timeout(30):
             data = await get_station(session, station_key)
 
@@ -81,12 +90,17 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
 class Measurement(CoordinatorEntity, SensorEntity):
     """A gauge at a flood monitoring station."""
 
-    attribution = "This uses Environment Agency flood and river level data from the real-time data API"
+    _attr_attribution = (
+        "This uses Environment Agency flood and river level data "
+        "from the real-time data API"
+    )
+    _attr_state_class = SensorStateClass.MEASUREMENT
 
     def __init__(self, coordinator, key):
         """Initialise the gauge with a data instance and station."""
         super().__init__(coordinator)
         self.key = key
+        self._attr_unique_id = key
 
     @property
     def station_name(self):
@@ -114,20 +128,15 @@ class Measurement(CoordinatorEntity, SensorEntity):
         return f"{self.station_name} {self.parameter_name} {self.qualifier}"
 
     @property
-    def unique_id(self):
-        """Return the unique id of the gauge."""
-        return self.key
-
-    @property
     def device_info(self):
         """Return the device info."""
-        return {
-            "identifiers": {(DOMAIN, "measure-id", self.station_id)},
-            "name": self.name,
-            "manufacturer": "https://environment.data.gov.uk/",
-            "model": self.parameter_name,
-            "entry_type": "service",
-        }
+        return DeviceInfo(
+            entry_type=DeviceEntryType.SERVICE,
+            identifiers={(DOMAIN, "measure-id", self.station_id)},
+            manufacturer="https://environment.data.gov.uk/",
+            model=self.parameter_name,
+            name=self.name,
+        )
 
     @property
     def available(self) -> bool:
@@ -149,7 +158,7 @@ class Measurement(CoordinatorEntity, SensorEntity):
         return True
 
     @property
-    def unit_of_measurement(self):
+    def native_unit_of_measurement(self):
         """Return units for the sensor."""
         measure = self.coordinator.data["measures"][self.key]
         if "unit" not in measure:
@@ -157,11 +166,6 @@ class Measurement(CoordinatorEntity, SensorEntity):
         return UNIT_MAPPING.get(measure["unit"], measure["unitName"])
 
     @property
-    def extra_state_attributes(self):
-        """Return the sensor specific state attributes."""
-        return {ATTR_ATTRIBUTION: self.attribution}
-
-    @property
-    def state(self):
+    def native_value(self):
         """Return the current sensor value."""
         return self.coordinator.data["measures"][self.key]["latestReading"]["value"]

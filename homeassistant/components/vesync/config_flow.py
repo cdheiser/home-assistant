@@ -16,7 +16,7 @@ class VeSyncFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
 
     VERSION = 1
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Instantiate config flow."""
         self._username = None
         self._password = None
@@ -32,10 +32,6 @@ class VeSyncFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             data_schema=vol.Schema(self.data_schema),
             errors=errors if errors else {},
         )
-
-    async def async_step_import(self, import_config):
-        """Handle external yaml configuration."""
-        return await self.async_step_user(import_config)
 
     async def async_step_user(self, user_input=None):
         """Handle a flow start."""

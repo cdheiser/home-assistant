@@ -1,5 +1,4 @@
 """Test the Logitech Harmony Hub activity switches."""
-
 from datetime import timedelta
 
 from homeassistant.components.harmony.const import DOMAIN
@@ -16,6 +15,8 @@ from homeassistant.const import (
     STATE_ON,
     STATE_UNAVAILABLE,
 )
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
 from homeassistant.util import utcnow
 
 from .const import ENTITY_PLAY_MUSIC, ENTITY_REMOTE, ENTITY_WATCH_TV, HUB_NAME
@@ -24,8 +25,12 @@ from tests.common import MockConfigEntry, async_fire_time_changed
 
 
 async def test_connection_state_changes(
-    harmony_client, mock_hc, hass, mock_write_config
-):
+    harmony_client,
+    mock_hc,
+    hass: HomeAssistant,
+    mock_write_config,
+    entity_registry: er.EntityRegistry,
+) -> None:
     """Ensure connection changes are reflected in the switch states."""
     entry = MockConfigEntry(
         domain=DOMAIN, data={CONF_HOST: "192.0.2.0", CONF_NAME: HUB_NAME}
@@ -33,6 +38,16 @@ async def test_connection_state_changes(
 
     entry.add_to_hass(hass)
     await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    # check if switch entities are disabled by default
+    assert not hass.states.get(ENTITY_WATCH_TV)
+    assert not hass.states.get(ENTITY_PLAY_MUSIC)
+
+    # enable switch entities
+    entity_registry.async_update_entity(ENTITY_WATCH_TV, disabled_by=None)
+    entity_registry.async_update_entity(ENTITY_PLAY_MUSIC, disabled_by=None)
+    await hass.config_entries.async_reload(entry.entry_id)
     await hass.async_block_till_done()
 
     # mocks start with current activity == Watch TV
@@ -68,7 +83,9 @@ async def test_connection_state_changes(
     assert hass.states.is_state(ENTITY_PLAY_MUSIC, STATE_OFF)
 
 
-async def test_switch_toggles(mock_hc, hass, mock_write_config):
+async def test_switch_toggles(
+    mock_hc, hass: HomeAssistant, mock_write_config, entity_registry: er.EntityRegistry
+) -> None:
     """Ensure calls to the switch modify the harmony state."""
     entry = MockConfigEntry(
         domain=DOMAIN, data={CONF_HOST: "192.0.2.0", CONF_NAME: HUB_NAME}
@@ -76,6 +93,12 @@ async def test_switch_toggles(mock_hc, hass, mock_write_config):
 
     entry.add_to_hass(hass)
     await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    # enable switch entities
+    entity_registry.async_update_entity(ENTITY_WATCH_TV, disabled_by=None)
+    entity_registry.async_update_entity(ENTITY_PLAY_MUSIC, disabled_by=None)
+    await hass.config_entries.async_reload(entry.entry_id)
     await hass.async_block_till_done()
 
     # mocks start with current activity == Watch TV

@@ -3,35 +3,34 @@ from __future__ import annotations
 
 from datetime import timedelta
 import logging
-from typing import Any, Dict
+from typing import Any
 
 from accuweather import AccuWeather, ApiError, InvalidApiKeyError, RequestsExceededError
 from aiohttp import ClientSession
 from aiohttp.client_exceptions import ClientConnectorError
 from async_timeout import timeout
 
+from homeassistant.components.sensor import DOMAIN as SENSOR_PLATFORM
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_API_KEY
+from homeassistant.const import CONF_API_KEY, CONF_NAME, Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.device_registry import DeviceEntryType
+from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from .const import (
-    ATTR_FORECAST,
-    CONF_FORECAST,
-    COORDINATOR,
-    DOMAIN,
-    UNDO_UPDATE_LISTENER,
-)
+from .const import ATTR_FORECAST, CONF_FORECAST, DOMAIN, MANUFACTURER
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS = ["sensor", "weather"]
+PLATFORMS = [Platform.SENSOR, Platform.WEATHER]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up AccuWeather as config entry."""
     api_key: str = entry.data[CONF_API_KEY]
+    name: str = entry.data[CONF_NAME]
     assert entry.unique_id is not None
     location_key = entry.unique_id
     forecast: bool = entry.options.get(CONF_FORECAST, False)
@@ -41,18 +40,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     websession = async_get_clientsession(hass)
 
     coordinator = AccuWeatherDataUpdateCoordinator(
-        hass, websession, api_key, location_key, forecast
+        hass, websession, api_key, location_key, forecast, name
     )
     await coordinator.async_config_entry_first_refresh()
 
-    undo_listener = entry.add_update_listener(update_listener)
+    entry.async_on_unload(entry.add_update_listener(update_listener))
 
-    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {
-        COORDINATOR: coordinator,
-        UNDO_UPDATE_LISTENER: undo_listener,
-    }
+    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
 
-    hass.config_entries.async_setup_platforms(entry, PLATFORMS)
+    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+
+    # Remove ozone sensors from registry if they exist
+    ent_reg = er.async_get(hass)
+    for day in range(0, 5):
+        unique_id = f"{coordinator.location_key}-ozone-{day}"
+        if entity_id := ent_reg.async_get_entity_id(SENSOR_PLATFORM, DOMAIN, unique_id):
+            _LOGGER.debug("Removing ozone sensor entity %s", entity_id)
+            ent_reg.async_remove(entity_id)
 
     return True
 
@@ -60,8 +64,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
-
-    hass.data[DOMAIN][entry.entry_id][UNDO_UPDATE_LISTENER]()
 
     if unload_ok:
         hass.data[DOMAIN].pop(entry.entry_id)
@@ -74,7 +76,7 @@ async def update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
     await hass.config_entries.async_reload(entry.entry_id)
 
 
-class AccuWeatherDataUpdateCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
+class AccuWeatherDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     """Class to manage fetching AccuWeather data API."""
 
     def __init__(
@@ -84,12 +86,26 @@ class AccuWeatherDataUpdateCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         api_key: str,
         location_key: str,
         forecast: bool,
+        name: str,
     ) -> None:
         """Initialize."""
         self.location_key = location_key
         self.forecast = forecast
-        self.is_metric = hass.config.units.is_metric
-        self.accuweather = AccuWeather(api_key, session, location_key=self.location_key)
+        self.accuweather = AccuWeather(api_key, session, location_key=location_key)
+        self.device_info = DeviceInfo(
+            entry_type=DeviceEntryType.SERVICE,
+            identifiers={(DOMAIN, location_key)},
+            manufacturer=MANUFACTURER,
+            name=name,
+            # You don't need to provide specific details for the URL,
+            # so passing in _ characters is fine if the location key
+            # is correct
+            configuration_url=(
+                "http://accuweather.com/en/"
+                f"_/_/{location_key}/"
+                f"weather-forecast/{location_key}/"
+            ),
+        )
 
         # Enabling the forecast download increases the number of requests per data
         # update, we use 40 minutes for current condition only and 80 minutes for
@@ -105,14 +121,12 @@ class AccuWeatherDataUpdateCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
 
     async def _async_update_data(self) -> dict[str, Any]:
         """Update data via library."""
+        forecast: list[dict[str, Any]] = []
         try:
             async with timeout(10):
                 current = await self.accuweather.async_get_current_conditions()
-                forecast = (
-                    await self.accuweather.async_get_forecast(metric=self.is_metric)
-                    if self.forecast
-                    else {}
-                )
+                if self.forecast:
+                    forecast = await self.accuweather.async_get_daily_forecast()
         except (
             ApiError,
             ClientConnectorError,

@@ -8,11 +8,10 @@ import logging
 import aiohttp
 import voluptuous as vol
 
-from homeassistant.components.camera import PLATFORM_SCHEMA, Camera
+from homeassistant.components.camera import Camera
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_LATITUDE, CONF_LONGITUDE, CONF_NAME
+from homeassistant.const import CONF_LATITUDE, CONF_LONGITUDE
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.util import dt as dt_util
@@ -20,7 +19,6 @@ from homeassistant.util import dt as dt_util
 from .const import (
     CONF_COUNTRY,
     CONF_DELTA,
-    CONF_DIMENSION,
     DEFAULT_COUNTRY,
     DEFAULT_DELTA,
     DEFAULT_DIMENSION,
@@ -33,26 +31,6 @@ DIM_RANGE = vol.All(vol.Coerce(int), vol.Range(min=120, max=700))
 
 # Multiple choice for available Radar Map URL
 SUPPORTED_COUNTRY_CODES = ["NL", "BE"]
-
-PLATFORM_SCHEMA = vol.All(
-    PLATFORM_SCHEMA.extend(
-        {
-            vol.Optional(CONF_DIMENSION, default=512): DIM_RANGE,
-            vol.Optional(CONF_DELTA, default=600.0): cv.positive_float,
-            vol.Optional(CONF_NAME, default="Buienradar loop"): cv.string,
-            vol.Optional(CONF_COUNTRY, default="NL"): vol.All(
-                vol.Coerce(str), vol.In(SUPPORTED_COUNTRY_CODES)
-            ),
-        }
-    )
-)
-
-
-async def async_setup_platform(hass, config, async_add_entities, discovery_info=None):
-    """Set up buienradar camera platform."""
-    _LOGGER.warning(
-        "Platform configuration is deprecated, will be removed in a future release"
-    )
 
 
 async def async_setup_entry(
@@ -73,8 +51,7 @@ async def async_setup_entry(
 
 
 class BuienradarCam(Camera):
-    """
-    A camera component producing animated buienradar radar-imagery GIFs.
+    """A camera component producing animated buienradar radar-imagery GIFs.
 
     Rain radar imagery camera based on image URL taken from [0].
 
@@ -84,8 +61,7 @@ class BuienradarCam(Camera):
     def __init__(
         self, latitude: float, longitude: float, delta: float, country: str
     ) -> None:
-        """
-        Initialize the component.
+        """Initialize the component.
 
         This constructor must be run in the event loop.
         """
@@ -153,8 +129,7 @@ class BuienradarCam(Camera):
                     _LOGGER.debug("HTTP 304 - success")
                     return True
 
-                last_modified = res.headers.get("Last-Modified")
-                if last_modified:
+                if last_modified := res.headers.get("Last-Modified"):
                     self._last_modified = last_modified
 
                 self._last_image = await res.read()
@@ -165,11 +140,12 @@ class BuienradarCam(Camera):
             _LOGGER.error("Failed to fetch image, %s", type(err))
             return False
 
-    async def async_camera_image(self) -> bytes | None:
-        """
-        Return a still image response from the camera.
+    async def async_camera_image(
+        self, width: int | None = None, height: int | None = None
+    ) -> bytes | None:
+        """Return a still image response from the camera.
 
-        Uses ayncio conditions to make sure only one task enters the critical
+        Uses asyncio conditions to make sure only one task enters the critical
         section at the same time. Otherwise, two http requests would start
         when two tabs with Home Assistant are open.
 
@@ -189,7 +165,7 @@ class BuienradarCam(Camera):
 
         # get lock, check iff loading, await notification if loading
         async with self._condition:
-            # can not be tested - mocked http response returns immediately
+            # cannot be tested - mocked http response returns immediately
             if self._loading:
                 _LOGGER.debug("already loading - waiting for notification")
                 await self._condition.wait()

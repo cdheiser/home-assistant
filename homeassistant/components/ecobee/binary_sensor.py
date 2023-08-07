@@ -1,13 +1,23 @@
 """Support for Ecobee binary sensors."""
+from __future__ import annotations
+
 from homeassistant.components.binary_sensor import (
-    DEVICE_CLASS_OCCUPANCY,
+    BinarySensorDeviceClass,
     BinarySensorEntity,
 )
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import _LOGGER, DOMAIN, ECOBEE_MODEL_TO_NAME, MANUFACTURER
+from .const import DOMAIN, ECOBEE_MODEL_TO_NAME, MANUFACTURER
 
 
-async def async_setup_entry(hass, config_entry, async_add_entities):
+async def async_setup_entry(
+    hass: HomeAssistant,
+    config_entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
     """Set up ecobee binary (occupancy) sensors."""
     data = hass.data[DOMAIN]
     dev = []
@@ -25,18 +35,15 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
 class EcobeeBinarySensor(BinarySensorEntity):
     """Representation of an Ecobee sensor."""
 
+    _attr_device_class = BinarySensorDeviceClass.OCCUPANCY
+    _attr_has_entity_name = True
+
     def __init__(self, data, sensor_name, sensor_index):
         """Initialize the Ecobee sensor."""
         self.data = data
-        self._name = f"{sensor_name} Occupancy"
-        self.sensor_name = sensor_name
+        self.sensor_name = sensor_name.rstrip()
         self.index = sensor_index
         self._state = None
-
-    @property
-    def name(self):
-        """Return the name of the Ecobee sensor."""
-        return self._name.rstrip()
 
     @property
     def unique_id(self):
@@ -49,7 +56,7 @@ class EcobeeBinarySensor(BinarySensorEntity):
                 return f"{thermostat['identifier']}-{sensor['id']}-{self.device_class}"
 
     @property
-    def device_info(self):
+    def device_info(self) -> DeviceInfo | None:
         """Return device information for this sensor."""
         identifier = None
         model = None
@@ -67,36 +74,31 @@ class EcobeeBinarySensor(BinarySensorEntity):
                         f"{ECOBEE_MODEL_TO_NAME[thermostat['modelNumber']]} Thermostat"
                     )
                 except KeyError:
-                    _LOGGER.error(
-                        "Model number for ecobee thermostat %s not recognized. "
-                        "Please visit this link and provide the following information: "
-                        "https://github.com/home-assistant/core/issues/27172 "
-                        "Unrecognized model number: %s",
-                        thermostat["name"],
-                        thermostat["modelNumber"],
-                    )
+                    # Ecobee model is not in our list
+                    model = None
             break
 
-        if identifier is not None and model is not None:
-            return {
-                "identifiers": {(DOMAIN, identifier)},
-                "name": self.sensor_name,
-                "manufacturer": MANUFACTURER,
-                "model": model,
-            }
+        if identifier is not None:
+            return DeviceInfo(
+                identifiers={(DOMAIN, identifier)},
+                manufacturer=MANUFACTURER,
+                model=model,
+                name=self.sensor_name,
+            )
         return None
+
+    @property
+    def available(self) -> bool:
+        """Return true if device is available."""
+        thermostat = self.data.ecobee.get_thermostat(self.index)
+        return thermostat["runtime"]["connected"]
 
     @property
     def is_on(self):
         """Return the status of the sensor."""
         return self._state == "true"
 
-    @property
-    def device_class(self):
-        """Return the class of this sensor, from DEVICE_CLASSES."""
-        return DEVICE_CLASS_OCCUPANCY
-
-    async def async_update(self):
+    async def async_update(self) -> None:
         """Get the latest state of the sensor."""
         await self.data.update()
         for sensor in self.data.ecobee.get_remote_sensors(self.index):

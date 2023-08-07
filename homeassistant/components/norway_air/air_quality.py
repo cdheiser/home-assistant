@@ -1,4 +1,6 @@
 """Sensor for checking the air quality forecast around Norway."""
+from __future__ import annotations
+
 from datetime import timedelta
 import logging
 
@@ -7,22 +9,21 @@ import voluptuous as vol
 
 from homeassistant.components.air_quality import PLATFORM_SCHEMA, AirQualityEntity
 from homeassistant.const import CONF_LATITUDE, CONF_LONGITUDE, CONF_NAME
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 
 _LOGGER = logging.getLogger(__name__)
 
-ATTRIBUTION = (
-    "Air quality from "
-    "https://luftkvalitet.miljostatus.no/, "
-    "delivered by the Norwegian Meteorological Institute."
-)
-# https://api.met.no/license_data.html
 
 CONF_FORECAST = "forecast"
 
 DEFAULT_FORECAST = 0
 DEFAULT_NAME = "Air quality Norway"
+
+OVERRIDE_URL = "https://aa015h6buqvih86i1.api.met.no/weatherapi/airqualityforecast/0.1/"
 
 PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
     {
@@ -36,7 +37,12 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
 SCAN_INTERVAL = timedelta(minutes=5)
 
 
-async def async_setup_platform(hass, config, async_add_entities, discovery_info=None):
+async def async_setup_platform(
+    hass: HomeAssistant,
+    config: ConfigType,
+    async_add_entities: AddEntitiesCallback,
+    discovery_info: DiscoveryInfoType | None = None,
+) -> None:
     """Set up the air_quality norway sensor."""
     forecast = config.get(CONF_FORECAST)
     latitude = config.get(CONF_LATITUDE, hass.config.latitude)
@@ -69,15 +75,19 @@ def round_state(func):
 class AirSensor(AirQualityEntity):
     """Representation of an air quality sensor."""
 
+    # https://api.met.no/license_data.html
+    _attr_attribution = (
+        "Air quality from "
+        "https://luftkvalitet.miljostatus.no/, "
+        "delivered by the Norwegian Meteorological Institute."
+    )
+
     def __init__(self, name, coordinates, forecast, session):
         """Initialize the sensor."""
         self._name = name
-        self._api = metno.AirQualityData(coordinates, forecast, session)
-
-    @property
-    def attribution(self) -> str:
-        """Return the attribution."""
-        return ATTRIBUTION
+        self._api = metno.AirQualityData(
+            coordinates, forecast, session, api_url=OVERRIDE_URL
+        )
 
     @property
     def extra_state_attributes(self) -> dict:

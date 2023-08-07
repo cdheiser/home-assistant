@@ -1,7 +1,6 @@
 """Consts for Cast integration."""
 
 DOMAIN = "cast"
-DEFAULT_PORT = 8009
 
 # Stores a threading.Lock that is held by the internal pychromecast discovery.
 INTERNAL_DISCOVERY_RUNNING_KEY = "cast_discovery_running"
@@ -26,4 +25,3 @@ SIGNAL_HASS_CAST_SHOW_VIEW = "cast_show_view"
 
 CONF_IGNORE_CEC = "ignore_cec"
 CONF_KNOWN_HOSTS = "known_hosts"
-CONF_UUID = "uuid"

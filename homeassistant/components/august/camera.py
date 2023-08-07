@@ -1,25 +1,34 @@
 """Support for August doorbell camera."""
+from __future__ import annotations
 
 from yalexs.activity import ActivityType
 from yalexs.util import update_doorbell_image_from_activity
 
 from homeassistant.components.camera import Camera
-from homeassistant.core import callback
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import aiohttp_client
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DATA_AUGUST, DEFAULT_NAME, DEFAULT_TIMEOUT, DOMAIN
+from . import AugustData
+from .const import DEFAULT_NAME, DEFAULT_TIMEOUT, DOMAIN
 from .entity import AugustEntityMixin
 
 
-async def async_setup_entry(hass, config_entry, async_add_entities):
+async def async_setup_entry(
+    hass: HomeAssistant,
+    config_entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
     """Set up August cameras."""
-    data = hass.data[DOMAIN][config_entry.entry_id][DATA_AUGUST]
-    session = aiohttp_client.async_get_clientsession(hass)
+    data: AugustData = hass.data[DOMAIN][config_entry.entry_id]
+    # Create an aiohttp session instead of using the default one since the
+    # default one is likely to trigger august's WAF if another integration
+    # is also using Cloudflare
+    session = aiohttp_client.async_create_clientsession(hass)
     async_add_entities(
-        [
-            AugustCamera(data, doorbell, session, DEFAULT_TIMEOUT)
-            for doorbell in data.doorbells
-        ]
+        AugustCamera(data, doorbell, session, DEFAULT_TIMEOUT)
+        for doorbell in data.doorbells
     )
 
 
@@ -29,25 +38,20 @@ class AugustCamera(AugustEntityMixin, Camera):
     def __init__(self, data, device, session, timeout):
         """Initialize a August security camera."""
         super().__init__(data, device)
-        self._data = data
-        self._device = device
         self._timeout = timeout
         self._session = session
         self._image_url = None
         self._image_content = None
+        self._attr_name = f"{device.device_name} Camera"
+        self._attr_unique_id = f"{self._device_id:s}_camera"
 
     @property
-    def name(self):
-        """Return the name of this device."""
-        return f"{self._device.device_name} Camera"
-
-    @property
-    def is_recording(self):
+    def is_recording(self) -> bool:
         """Return true if the device is recording."""
         return self._device.has_subscription
 
     @property
-    def motion_detection_enabled(self):
+    def motion_detection_enabled(self) -> bool:
         """Return the camera motion detection status."""
         return True
 
@@ -65,13 +69,16 @@ class AugustCamera(AugustEntityMixin, Camera):
     def _update_from_data(self):
         """Get the latest state of the sensor."""
         doorbell_activity = self._data.activity_stream.get_latest_device_activity(
-            self._device_id, {ActivityType.DOORBELL_MOTION}
+            self._device_id,
+            {ActivityType.DOORBELL_MOTION, ActivityType.DOORBELL_IMAGE_CAPTURE},
         )
 
         if doorbell_activity is not None:
             update_doorbell_image_from_activity(self._detail, doorbell_activity)
 
-    async def async_camera_image(self):
+    async def async_camera_image(
+        self, width: int | None = None, height: int | None = None
+    ) -> bytes | None:
         """Return bytes of camera image."""
         self._update_from_data()
 
@@ -81,8 +88,3 @@ class AugustCamera(AugustEntityMixin, Camera):
                 self._session, timeout=self._timeout
             )
         return self._image_content
-
-    @property
-    def unique_id(self) -> str:
-        """Get the unique id of the camera."""
-        return f"{self._device_id:s}_camera"

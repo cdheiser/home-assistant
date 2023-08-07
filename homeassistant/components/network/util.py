@@ -57,15 +57,6 @@ def enable_auto_detected_adapters(adapters: list[Adapter]) -> None:
     )
 
 
-def adapters_with_exernal_addresses(adapters: list[Adapter]) -> list[str]:
-    """Enable all interfaces with an external address."""
-    return [
-        adapter["name"]
-        for adapter in adapters
-        if _adapter_has_external_address(adapter)
-    ]
-
-
 def _adapter_has_external_address(adapter: Adapter) -> bool:
     """Adapter has a non-loopback and non-link-local address."""
     return any(
@@ -106,6 +97,7 @@ def _ifaddr_adapter_to_ha(
             ip_addr = ip_address(ip_config.ip[0])
             ip_v6s.append(_ip_v6_from_adapter(ip_config))
         else:
+            assert not isinstance(ip_config.ip, tuple)
             ip_addr = ip_address(ip_config.ip)
             ip_v4s.append(_ip_v4_from_adapter(ip_config))
 
@@ -116,6 +108,7 @@ def _ifaddr_adapter_to_ha(
 
     return {
         "name": adapter.nice_name,
+        "index": adapter.index,
         "enabled": False,
         "auto": auto,
         "default": default,
@@ -125,6 +118,7 @@ def _ifaddr_adapter_to_ha(
 
 
 def _ip_v6_from_adapter(ip_config: ifaddr.IP) -> IPv6ConfiguredAddress:
+    assert isinstance(ip_config.ip, tuple)
     return {
         "address": ip_config.ip[0],
         "flowinfo": ip_config.ip[1],
@@ -134,6 +128,7 @@ def _ip_v6_from_adapter(ip_config: ifaddr.IP) -> IPv6ConfiguredAddress:
 
 
 def _ip_v4_from_adapter(ip_config: ifaddr.IP) -> IPv4ConfiguredAddress:
+    assert not isinstance(ip_config.ip, tuple)
     return {
         "address": ip_config.ip,
         "network_prefix": ip_config.network_prefix,
@@ -150,7 +145,10 @@ def async_get_source_ip(target_ip: str) -> str | None:
         return cast(str, test_sock.getsockname()[0])
     except Exception:  # pylint: disable=broad-except
         _LOGGER.debug(
-            "The system could not auto detect the source ip for %s on your operating system",
+            (
+                "The system could not auto detect the source ip for %s on your"
+                " operating system"
+            ),
             target_ip,
         )
         return None

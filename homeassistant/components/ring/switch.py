@@ -1,11 +1,14 @@
-"""This component provides HA switch support for Ring Door Bell/Chimes."""
+"""Component providing HA switch support for Ring Door Bell/Chimes."""
 from datetime import timedelta
 import logging
+from typing import Any
 
 import requests
 
 from homeassistant.components.switch import SwitchEntity
-from homeassistant.core import callback
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
 import homeassistant.util.dt as dt_util
 
 from . import DOMAIN
@@ -24,7 +27,11 @@ SIREN_ICON = "mdi:alarm-bell"
 SKIP_UPDATES_DELAY = timedelta(seconds=5)
 
 
-async def async_setup_entry(hass, config_entry, async_add_entities):
+async def async_setup_entry(
+    hass: HomeAssistant,
+    config_entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
     """Create the switches for the Ring devices."""
     devices = hass.data[DOMAIN][config_entry.entry_id]["devices"]
     switches = []
@@ -46,11 +53,6 @@ class BaseRingSwitch(RingEntityMixin, SwitchEntity):
         self._unique_id = f"{self._device.id}-{self._device_type}"
 
     @property
-    def name(self):
-        """Name of the device."""
-        return f"{self._device.name} {self._device_type}"
-
-    @property
     def unique_id(self):
         """Return a unique ID."""
         return self._unique_id
@@ -58,6 +60,8 @@ class BaseRingSwitch(RingEntityMixin, SwitchEntity):
 
 class SirenSwitch(BaseRingSwitch):
     """Creates a switch to turn the ring cameras siren on and off."""
+
+    _attr_translation_key = "siren"
 
     def __init__(self, config_entry_id, device):
         """Initialize the switch for a device with a siren."""
@@ -91,11 +95,11 @@ class SirenSwitch(BaseRingSwitch):
         """If the switch is currently on or off."""
         return self._siren_on
 
-    def turn_on(self, **kwargs):
+    def turn_on(self, **kwargs: Any) -> None:
         """Turn the siren on for 30 seconds."""
         self._set_switch(1)
 
-    def turn_off(self, **kwargs):
+    def turn_off(self, **kwargs: Any) -> None:
         """Turn the siren off."""
         self._set_switch(0)
 

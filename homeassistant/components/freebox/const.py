@@ -1,12 +1,9 @@
 """Freebox component constants."""
+from __future__ import annotations
+
 import socket
 
-from homeassistant.const import (
-    DATA_RATE_KILOBYTES_PER_SECOND,
-    DEVICE_CLASS_TEMPERATURE,
-    PERCENTAGE,
-    TEMP_CELSIUS,
-)
+from homeassistant.const import Platform
 
 DOMAIN = "freebox"
 SERVICE_REBOOT = "reboot"
@@ -19,7 +16,14 @@ APP_DESC = {
 }
 API_VERSION = "v6"
 
-PLATFORMS = ["device_tracker", "sensor", "switch"]
+PLATFORMS = [
+    Platform.BUTTON,
+    Platform.DEVICE_TRACKER,
+    Platform.SENSOR,
+    Platform.BINARY_SENSOR,
+    Platform.SWITCH,
+    Platform.CAMERA,
+]
 
 DEFAULT_DEVICE_NAME = "Unknown device"
 
@@ -27,51 +31,8 @@ DEFAULT_DEVICE_NAME = "Unknown device"
 STORAGE_KEY = DOMAIN
 STORAGE_VERSION = 1
 
-# Sensor
-SENSOR_NAME = "name"
-SENSOR_UNIT = "unit"
-SENSOR_ICON = "icon"
-SENSOR_DEVICE_CLASS = "device_class"
 
-CONNECTION_SENSORS = {
-    "rate_down": {
-        SENSOR_NAME: "Freebox download speed",
-        SENSOR_UNIT: DATA_RATE_KILOBYTES_PER_SECOND,
-        SENSOR_ICON: "mdi:download-network",
-        SENSOR_DEVICE_CLASS: None,
-    },
-    "rate_up": {
-        SENSOR_NAME: "Freebox upload speed",
-        SENSOR_UNIT: DATA_RATE_KILOBYTES_PER_SECOND,
-        SENSOR_ICON: "mdi:upload-network",
-        SENSOR_DEVICE_CLASS: None,
-    },
-}
-
-CALL_SENSORS = {
-    "missed": {
-        SENSOR_NAME: "Freebox missed calls",
-        SENSOR_UNIT: None,
-        SENSOR_ICON: "mdi:phone-missed",
-        SENSOR_DEVICE_CLASS: None,
-    },
-}
-
-DISK_PARTITION_SENSORS = {
-    "partition_free_space": {
-        SENSOR_NAME: "free space",
-        SENSOR_UNIT: PERCENTAGE,
-        SENSOR_ICON: "mdi:harddisk",
-        SENSOR_DEVICE_CLASS: None,
-    },
-}
-
-TEMPERATURE_SENSOR_TEMPLATE = {
-    SENSOR_NAME: None,
-    SENSOR_UNIT: TEMP_CELSIUS,
-    SENSOR_ICON: "mdi:thermometer",
-    SENSOR_DEVICE_CLASS: DEVICE_CLASS_TEMPERATURE,
-}
+CONNECTION_SENSORS_KEYS = {"rate_down", "rate_up"}
 
 # Icons
 DEVICE_ICONS = {
@@ -93,3 +54,20 @@ DEVICE_ICONS = {
     "vg_console": "mdi:gamepad-variant",
     "workstation": "mdi:desktop-tower-monitor",
 }
+
+ATTR_DETECTION = "detection"
+
+
+CATEGORY_TO_MODEL = {
+    "pir": "F-HAPIR01A",
+    "camera": "F-HACAM01A",
+    "dws": "F-HADWS01A",
+    "kfb": "F-HAKFB01A",
+    "alarm": "F-MSEC07A",
+    "rts": "RTS",
+    "iohome": "IOHome",
+}
+
+HOME_COMPATIBLE_PLATFORMS = [
+    Platform.CAMERA,
+]

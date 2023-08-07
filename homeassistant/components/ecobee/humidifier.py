@@ -1,16 +1,22 @@
 """Support for using humidifier with ecobee thermostats."""
+from __future__ import annotations
+
 from datetime import timedelta
 
-from homeassistant.components.humidifier import HumidifierEntity
-from homeassistant.components.humidifier.const import (
+from homeassistant.components.humidifier import (
     DEFAULT_MAX_HUMIDITY,
     DEFAULT_MIN_HUMIDITY,
-    DEVICE_CLASS_HUMIDIFIER,
     MODE_AUTO,
-    SUPPORT_MODES,
+    HumidifierDeviceClass,
+    HumidifierEntity,
+    HumidifierEntityFeature,
 )
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN
+from .const import DOMAIN, ECOBEE_MODEL_TO_NAME, MANUFACTURER
 
 SCAN_INTERVAL = timedelta(minutes=3)
 
@@ -18,7 +24,11 @@ MODE_MANUAL = "manual"
 MODE_OFF = "off"
 
 
-async def async_setup_entry(hass, config_entry, async_add_entities):
+async def async_setup_entry(
+    hass: HomeAssistant,
+    config_entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
     """Set up the ecobee thermostat humidifier entity."""
     data = hass.data[DOMAIN]
     entities = []
@@ -31,17 +41,43 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
 
 
 class EcobeeHumidifier(HumidifierEntity):
-    """A humidifier class for an ecobee thermostat with humidifer attached."""
+    """A humidifier class for an ecobee thermostat with humidifier attached."""
+
+    _attr_supported_features = HumidifierEntityFeature.MODES
+    _attr_has_entity_name = True
+    _attr_name = None
 
     def __init__(self, data, thermostat_index):
         """Initialize ecobee humidifier platform."""
         self.data = data
         self.thermostat_index = thermostat_index
         self.thermostat = self.data.ecobee.get_thermostat(self.thermostat_index)
-        self._name = self.thermostat["name"]
+        self._attr_unique_id = self.thermostat["identifier"]
         self._last_humidifier_on_mode = MODE_MANUAL
 
         self.update_without_throttle = False
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        """Return device information for the ecobee humidifier."""
+        model: str | None
+        try:
+            model = f"{ECOBEE_MODEL_TO_NAME[self.thermostat['modelNumber']]} Thermostat"
+        except KeyError:
+            # Ecobee model is not in our list
+            model = None
+
+        return DeviceInfo(
+            identifiers={(DOMAIN, self.thermostat["identifier"])},
+            manufacturer=MANUFACTURER,
+            model=model,
+            name=self.thermostat["name"],
+        )
+
+    @property
+    def available(self):
+        """Return if device is available."""
+        return self.thermostat["runtime"]["connected"]
 
     async def async_update(self):
         """Get the latest state from the thermostat."""
@@ -62,7 +98,7 @@ class EcobeeHumidifier(HumidifierEntity):
     @property
     def device_class(self):
         """Return the device class type."""
-        return DEVICE_CLASS_HUMIDIFIER
+        return HumidifierDeviceClass.HUMIDIFIER
 
     @property
     def is_on(self):
@@ -85,16 +121,6 @@ class EcobeeHumidifier(HumidifierEntity):
         return self.thermostat["settings"]["humidifierMode"]
 
     @property
-    def name(self):
-        """Return the name of the ecobee thermostat."""
-        return self._name
-
-    @property
-    def supported_features(self):
-        """Return the list of supported features."""
-        return SUPPORT_MODES
-
-    @property
     def target_humidity(self) -> int:
         """Return the desired humidity set point."""
         return int(self.thermostat["runtime"]["desiredHumidity"])
@@ -103,13 +129,14 @@ class EcobeeHumidifier(HumidifierEntity):
         """Set humidifier mode (auto, off, manual)."""
         if mode.lower() not in (self.available_modes):
             raise ValueError(
-                f"Invalid mode value: {mode}  Valid values are {', '.join(self.available_modes)}."
+                f"Invalid mode value: {mode}  Valid values are"
+                f" {', '.join(self.available_modes)}."
             )
 
         self.data.ecobee.set_humidifier_mode(self.thermostat_index, mode)
         self.update_without_throttle = True
 
-    def set_humidity(self, humidity):
+    def set_humidity(self, humidity: int) -> None:
         """Set the humidity level."""
         self.data.ecobee.set_humidity(self.thermostat_index, humidity)
         self.update_without_throttle = True

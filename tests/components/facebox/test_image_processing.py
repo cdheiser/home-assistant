@@ -1,4 +1,5 @@
 """The tests for the facebox component."""
+from http import HTTPStatus
 from unittest.mock import Mock, mock_open, patch
 
 import pytest
@@ -15,12 +16,9 @@ from homeassistant.const import (
     CONF_PASSWORD,
     CONF_PORT,
     CONF_USERNAME,
-    HTTP_BAD_REQUEST,
-    HTTP_OK,
-    HTTP_UNAUTHORIZED,
     STATE_UNKNOWN,
 )
-from homeassistant.core import callback
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.setup import async_setup_component
 
 MOCK_IP = "192.168.0.1"
@@ -77,6 +75,12 @@ VALID_CONFIG = {
 }
 
 
+@pytest.fixture(autouse=True)
+async def setup_homeassistant(hass: HomeAssistant):
+    """Set up the homeassistant integration."""
+    await async_setup_component(hass, "homeassistant", {})
+
+
 @pytest.fixture
 def mock_healthybox():
     """Mock fb.check_box_health."""
@@ -116,14 +120,14 @@ def mock_open_file():
         yield _mock_open
 
 
-def test_check_box_health(caplog):
+def test_check_box_health(caplog: pytest.LogCaptureFixture) -> None:
     """Test check box health."""
     with requests_mock.Mocker() as mock_req:
         url = f"http://{MOCK_IP}:{MOCK_PORT}/healthz"
-        mock_req.get(url, status_code=HTTP_OK, json=MOCK_HEALTH)
+        mock_req.get(url, status_code=HTTPStatus.OK, json=MOCK_HEALTH)
         assert fb.check_box_health(url, "user", "pass") == MOCK_BOX_ID
 
-        mock_req.get(url, status_code=HTTP_UNAUTHORIZED)
+        mock_req.get(url, status_code=HTTPStatus.UNAUTHORIZED)
         assert fb.check_box_health(url, None, None) is None
         assert "AuthenticationError on facebox" in caplog.text
 
@@ -132,35 +136,35 @@ def test_check_box_health(caplog):
         assert "ConnectionError: Is facebox running?" in caplog.text
 
 
-def test_encode_image():
+def test_encode_image() -> None:
     """Test that binary data is encoded correctly."""
     assert fb.encode_image(b"test") == "dGVzdA=="
 
 
-def test_get_matched_faces():
+def test_get_matched_faces() -> None:
     """Test that matched_faces are parsed correctly."""
     assert fb.get_matched_faces(PARSED_FACES) == MATCHED_FACES
 
 
-def test_parse_faces():
+def test_parse_faces() -> None:
     """Test parsing of raw face data, and generation of matched_faces."""
     assert fb.parse_faces(MOCK_JSON["faces"]) == PARSED_FACES
 
 
 @patch("os.access", Mock(return_value=False))
-def test_valid_file_path():
+def test_valid_file_path() -> None:
     """Test that an invalid file_path is caught."""
     assert not fb.valid_file_path("test_path")
 
 
-async def test_setup_platform(hass, mock_healthybox):
+async def test_setup_platform(hass: HomeAssistant, mock_healthybox) -> None:
     """Set up platform with one entity."""
     await async_setup_component(hass, ip.DOMAIN, VALID_CONFIG)
     await hass.async_block_till_done()
     assert hass.states.get(VALID_ENTITY_ID)
 
 
-async def test_setup_platform_with_auth(hass, mock_healthybox):
+async def test_setup_platform_with_auth(hass: HomeAssistant, mock_healthybox) -> None:
     """Set up platform with one entity and auth."""
     valid_config_auth = VALID_CONFIG.copy()
     valid_config_auth[ip.DOMAIN][CONF_USERNAME] = MOCK_USERNAME
@@ -171,7 +175,7 @@ async def test_setup_platform_with_auth(hass, mock_healthybox):
     assert hass.states.get(VALID_ENTITY_ID)
 
 
-async def test_process_image(hass, mock_healthybox, mock_image):
+async def test_process_image(hass: HomeAssistant, mock_healthybox, mock_image) -> None:
     """Test successful processing of an image."""
     await async_setup_component(hass, ip.DOMAIN, VALID_CONFIG)
     await hass.async_block_till_done()
@@ -215,7 +219,9 @@ async def test_process_image(hass, mock_healthybox, mock_image):
     )
 
 
-async def test_process_image_errors(hass, mock_healthybox, mock_image, caplog):
+async def test_process_image_errors(
+    hass: HomeAssistant, mock_healthybox, mock_image, caplog: pytest.LogCaptureFixture
+) -> None:
     """Test process_image errors."""
     await async_setup_component(hass, ip.DOMAIN, VALID_CONFIG)
     await hass.async_block_till_done()
@@ -238,7 +244,7 @@ async def test_process_image_errors(hass, mock_healthybox, mock_image, caplog):
     # Now test with bad auth.
     with requests_mock.Mocker() as mock_req:
         url = f"http://{MOCK_IP}:{MOCK_PORT}/facebox/check"
-        mock_req.register_uri("POST", url, status_code=HTTP_UNAUTHORIZED)
+        mock_req.register_uri("POST", url, status_code=HTTPStatus.UNAUTHORIZED)
         data = {ATTR_ENTITY_ID: VALID_ENTITY_ID}
         await hass.services.async_call(ip.DOMAIN, ip.SERVICE_SCAN, service_data=data)
         await hass.async_block_till_done()
@@ -246,8 +252,13 @@ async def test_process_image_errors(hass, mock_healthybox, mock_image, caplog):
 
 
 async def test_teach_service(
-    hass, mock_healthybox, mock_image, mock_isfile, mock_open_file, caplog
-):
+    hass: HomeAssistant,
+    mock_healthybox,
+    mock_image,
+    mock_isfile,
+    mock_open_file,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     """Test teaching of facebox."""
     await async_setup_component(hass, ip.DOMAIN, VALID_CONFIG)
     await hass.async_block_till_done()
@@ -259,7 +270,7 @@ async def test_teach_service(
     # Test successful teach.
     with requests_mock.Mocker() as mock_req:
         url = f"http://{MOCK_IP}:{MOCK_PORT}/facebox/teach"
-        mock_req.post(url, status_code=HTTP_OK)
+        mock_req.post(url, status_code=HTTPStatus.OK)
         data = {
             ATTR_ENTITY_ID: VALID_ENTITY_ID,
             ATTR_NAME: MOCK_NAME,
@@ -273,7 +284,7 @@ async def test_teach_service(
     # Now test with bad auth.
     with requests_mock.Mocker() as mock_req:
         url = f"http://{MOCK_IP}:{MOCK_PORT}/facebox/teach"
-        mock_req.post(url, status_code=HTTP_UNAUTHORIZED)
+        mock_req.post(url, status_code=HTTPStatus.UNAUTHORIZED)
         data = {
             ATTR_ENTITY_ID: VALID_ENTITY_ID,
             ATTR_NAME: MOCK_NAME,
@@ -288,7 +299,7 @@ async def test_teach_service(
     # Now test the failed teaching.
     with requests_mock.Mocker() as mock_req:
         url = f"http://{MOCK_IP}:{MOCK_PORT}/facebox/teach"
-        mock_req.post(url, status_code=HTTP_BAD_REQUEST, text=MOCK_ERROR_NO_FACE)
+        mock_req.post(url, status_code=HTTPStatus.BAD_REQUEST, text=MOCK_ERROR_NO_FACE)
         data = {
             ATTR_ENTITY_ID: VALID_ENTITY_ID,
             ATTR_NAME: MOCK_NAME,
@@ -316,7 +327,7 @@ async def test_teach_service(
         assert "ConnectionError: Is facebox running?" in caplog.text
 
 
-async def test_setup_platform_with_name(hass, mock_healthybox):
+async def test_setup_platform_with_name(hass: HomeAssistant, mock_healthybox) -> None:
     """Set up platform with one entity and a name."""
     named_entity_id = f"image_processing.{MOCK_NAME}"
 

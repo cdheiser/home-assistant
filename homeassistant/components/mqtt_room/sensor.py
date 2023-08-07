@@ -1,4 +1,6 @@
 """Support for MQTT room presence detection."""
+from __future__ import annotations
+
 from datetime import timedelta
 import json
 import logging
@@ -14,11 +16,14 @@ from homeassistant.const import (
     CONF_DEVICE_ID,
     CONF_NAME,
     CONF_TIMEOUT,
+    CONF_UNIQUE_ID,
     STATE_NOT_HOME,
 )
-from homeassistant.core import callback
+from homeassistant.core import HomeAssistant, callback
 import homeassistant.helpers.config_validation as cv
-from homeassistant.util import dt, slugify
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
+from homeassistant.util import dt as dt_util, slugify
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -38,8 +43,9 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
         vol.Required(CONF_TIMEOUT, default=DEFAULT_TIMEOUT): cv.positive_int,
         vol.Optional(CONF_AWAY_TIMEOUT, default=DEFAULT_AWAY_TIMEOUT): cv.positive_int,
         vol.Optional(CONF_NAME, default=DEFAULT_NAME): cv.string,
+        vol.Optional(CONF_UNIQUE_ID): cv.string,
     }
-).extend(mqtt.MQTT_RO_PLATFORM_SCHEMA.schema)
+).extend(mqtt.config.MQTT_RO_SCHEMA.schema)
 
 MQTT_PAYLOAD = vol.Schema(
     vol.All(
@@ -55,16 +61,28 @@ MQTT_PAYLOAD = vol.Schema(
 )
 
 
-async def async_setup_platform(hass, config, async_add_entities, discovery_info=None):
+async def async_setup_platform(
+    hass: HomeAssistant,
+    config: ConfigType,
+    async_add_entities: AddEntitiesCallback,
+    discovery_info: DiscoveryInfoType | None = None,
+) -> None:
     """Set up MQTT room Sensor."""
+    # Make sure MQTT integration is enabled and the client is available
+    # We cannot count on dependencies as the sensor platform setup
+    # also will be triggered when mqtt is loading the `sensor` platform
+    if not await mqtt.async_wait_for_mqtt_client(hass):
+        _LOGGER.error("MQTT integration is not available")
+        return
     async_add_entities(
         [
             MQTTRoomSensor(
                 config.get(CONF_NAME),
-                config.get(CONF_STATE_TOPIC),
-                config.get(CONF_DEVICE_ID),
-                config.get(CONF_TIMEOUT),
-                config.get(CONF_AWAY_TIMEOUT),
+                config[CONF_STATE_TOPIC],
+                config[CONF_DEVICE_ID],
+                config[CONF_TIMEOUT],
+                config[CONF_AWAY_TIMEOUT],
+                config.get(CONF_UNIQUE_ID),
             )
         ]
     )
@@ -73,8 +91,18 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
 class MQTTRoomSensor(SensorEntity):
     """Representation of a room sensor that is updated via MQTT."""
 
-    def __init__(self, name, state_topic, device_id, timeout, consider_home):
+    def __init__(
+        self,
+        name: str | None,
+        state_topic: str,
+        device_id: str,
+        timeout: int,
+        consider_home: int,
+        unique_id: str | None,
+    ) -> None:
         """Initialize the sensor."""
+        self._attr_unique_id = unique_id
+
         self._state = STATE_NOT_HOME
         self._name = name
         self._state_topic = f"{state_topic}/+"
@@ -86,7 +114,7 @@ class MQTTRoomSensor(SensorEntity):
         self._distance = None
         self._updated = None
 
-    async def async_added_to_hass(self):
+    async def async_added_to_hass(self) -> None:
         """Subscribe to MQTT events."""
 
         @callback
@@ -94,7 +122,7 @@ class MQTTRoomSensor(SensorEntity):
             """Update the sensor state."""
             self._state = room
             self._distance = distance
-            self._updated = dt.utcnow()
+            self._updated = dt_util.utcnow()
 
             self.async_write_ha_state()
 
@@ -116,7 +144,7 @@ class MQTTRoomSensor(SensorEntity):
                     # device is in the same room OR
                     # device is closer to another room OR
                     # last update from other room was too long ago
-                    timediff = dt.utcnow() - self._updated
+                    timediff = dt_util.utcnow() - self._updated
                     if (
                         device.get(ATTR_ROOM) == self._state
                         or device.get(ATTR_DISTANCE) < self._distance
@@ -124,9 +152,7 @@ class MQTTRoomSensor(SensorEntity):
                     ):
                         update_state(**device)
 
-        return await mqtt.async_subscribe(
-            self.hass, self._state_topic, message_received, 1
-        )
+        await mqtt.async_subscribe(self.hass, self._state_topic, message_received, 1)
 
     @property
     def name(self):
@@ -139,16 +165,16 @@ class MQTTRoomSensor(SensorEntity):
         return {ATTR_DISTANCE: self._distance}
 
     @property
-    def state(self):
+    def native_value(self):
         """Return the current room of the entity."""
         return self._state
 
-    def update(self):
+    def update(self) -> None:
         """Update the state for absent devices."""
         if (
             self._updated
             and self._consider_home
-            and dt.utcnow() - self._updated > self._consider_home
+            and dt_util.utcnow() - self._updated > self._consider_home
         ):
             self._state = STATE_NOT_HOME
 

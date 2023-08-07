@@ -1,12 +1,43 @@
 """Test the Wallbox config flow."""
-from unittest.mock import patch
+from http import HTTPStatus
+import json
 
-from voluptuous.schema_builder import raises
+import requests_mock
 
 from homeassistant import config_entries, data_entry_flow
-from homeassistant.components.wallbox import CannotConnect, InvalidAuth, config_flow
-from homeassistant.components.wallbox.const import DOMAIN
+from homeassistant.components.wallbox import config_flow
+from homeassistant.components.wallbox.const import (
+    CHARGER_ADDED_ENERGY_KEY,
+    CHARGER_ADDED_RANGE_KEY,
+    CHARGER_CHARGING_POWER_KEY,
+    CHARGER_CHARGING_SPEED_KEY,
+    CHARGER_DATA_KEY,
+    CHARGER_MAX_AVAILABLE_POWER_KEY,
+    CHARGER_MAX_CHARGING_CURRENT_KEY,
+    DOMAIN,
+)
 from homeassistant.core import HomeAssistant
+
+from . import (
+    authorisation_response,
+    authorisation_response_unauthorised,
+    setup_integration,
+)
+
+from tests.common import MockConfigEntry
+
+test_response = json.loads(
+    json.dumps(
+        {
+            CHARGER_CHARGING_POWER_KEY: 0,
+            CHARGER_MAX_AVAILABLE_POWER_KEY: "xx",
+            CHARGER_CHARGING_SPEED_KEY: 0,
+            CHARGER_ADDED_RANGE_KEY: "xx",
+            CHARGER_ADDED_ENERGY_KEY: "44.697",
+            CHARGER_DATA_KEY: {CHARGER_MAX_CHARGING_CURRENT_KEY: 24},
+        }
+    )
+)
 
 
 async def test_show_set_form(hass: HomeAssistant) -> None:
@@ -15,43 +46,27 @@ async def test_show_set_form(hass: HomeAssistant) -> None:
     flow.hass = hass
     result = await flow.async_step_user(user_input=None)
 
-    assert result["type"] == data_entry_flow.RESULT_TYPE_FORM
+    assert result["type"] == data_entry_flow.FlowResultType.FORM
     assert result["step_id"] == "user"
 
 
-async def test_form_invalid_auth(hass):
-    """Test we handle invalid auth."""
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN, context={"source": config_entries.SOURCE_USER}
-    )
-
-    with patch(
-        "homeassistant.components.wallbox.config_flow.WallboxHub.async_authenticate",
-        side_effect=InvalidAuth,
-    ):
-        result2 = await hass.config_entries.flow.async_configure(
-            result["flow_id"],
-            {
-                "station": "12345",
-                "username": "test-username",
-                "password": "test-password",
-            },
-        )
-
-    assert result2["type"] == "form"
-    assert result2["errors"] == {"base": "invalid_auth"}
-
-
-async def test_form_cannot_connect(hass):
+async def test_form_cannot_authenticate(hass: HomeAssistant) -> None:
     """Test we handle cannot connect error."""
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": config_entries.SOURCE_USER}
     )
 
-    with patch(
-        "homeassistant.components.wallbox.config_flow.WallboxHub.async_authenticate",
-        side_effect=CannotConnect,
-    ):
+    with requests_mock.Mocker() as mock_request:
+        mock_request.get(
+            "https://user-api.wall-box.com/users/signin",
+            json=authorisation_response,
+            status_code=HTTPStatus.FORBIDDEN,
+        )
+        mock_request.get(
+            "https://api.wall-box.com/chargers/status/12345",
+            json=test_response,
+            status_code=HTTPStatus.FORBIDDEN,
+        )
         result2 = await hass.config_entries.flow.async_configure(
             result["flow_id"],
             {
@@ -65,64 +80,141 @@ async def test_form_cannot_connect(hass):
     assert result2["errors"] == {"base": "invalid_auth"}
 
 
-async def test_validate_input(hass):
+async def test_form_cannot_connect(hass: HomeAssistant) -> None:
+    """Test we handle cannot connect error."""
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": config_entries.SOURCE_USER}
+    )
+
+    with requests_mock.Mocker() as mock_request:
+        mock_request.get(
+            "https://user-api.wall-box.com/users/signin",
+            json=authorisation_response_unauthorised,
+            status_code=HTTPStatus.NOT_FOUND,
+        )
+        mock_request.get(
+            "https://api.wall-box.com/chargers/status/12345",
+            json=test_response,
+            status_code=HTTPStatus.NOT_FOUND,
+        )
+        result2 = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {
+                "station": "12345",
+                "username": "test-username",
+                "password": "test-password",
+            },
+        )
+
+    assert result2["type"] == "form"
+    assert result2["errors"] == {"base": "cannot_connect"}
+
+
+async def test_form_validate_input(hass: HomeAssistant) -> None:
     """Test we can validate input."""
-    data = {
-        "station": "12345",
-        "username": "test-username",
-        "password": "test-password",
-    }
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": config_entries.SOURCE_USER}
+    )
 
-    def alternate_authenticate_method():
-        return None
+    with requests_mock.Mocker() as mock_request:
+        mock_request.get(
+            "https://user-api.wall-box.com/users/signin",
+            json=authorisation_response,
+            status_code=HTTPStatus.OK,
+        )
+        mock_request.get(
+            "https://api.wall-box.com/chargers/status/12345",
+            json=test_response,
+            status_code=HTTPStatus.OK,
+        )
+        result2 = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {
+                "station": "12345",
+                "username": "test-username",
+                "password": "test-password",
+            },
+        )
 
-    def alternate_get_charger_status_method(station):
-        data = '{"Temperature": 100, "Location": "Toronto", "Datetime": "2020-07-23", "Units": "Celsius"}'
-        return data
-
-    with patch(
-        "wallbox.Wallbox.authenticate",
-        side_effect=alternate_authenticate_method,
-    ), patch(
-        "wallbox.Wallbox.getChargerStatus",
-        side_effect=alternate_get_charger_status_method,
-    ):
-
-        result = await config_flow.validate_input(hass, data)
-
-        assert result == {"title": "Wallbox Portal"}
-
-
-async def test_configflow_class():
-    """Test configFlow class."""
-    configflow = config_flow.ConfigFlow()
-    assert configflow
-
-    with patch(
-        "homeassistant.components.wallbox.config_flow.validate_input",
-        side_effect=TypeError,
-    ), raises(Exception):
-        assert await configflow.async_step_user(True)
-
-    with patch(
-        "homeassistant.components.wallbox.config_flow.validate_input",
-        side_effect=CannotConnect,
-    ), raises(Exception):
-        assert await configflow.async_step_user(True)
-
-    with patch(
-        "homeassistant.components.wallbox.config_flow.validate_input",
-    ), raises(Exception):
-        assert await configflow.async_step_user(True)
+    assert result2["title"] == "Wallbox Portal"
+    assert result2["data"]["station"] == "12345"
 
 
-def test_cannot_connect_class():
-    """Test cannot Connect class."""
-    cannot_connect = CannotConnect
-    assert cannot_connect
+async def test_form_reauth(hass: HomeAssistant, entry: MockConfigEntry) -> None:
+    """Test we handle reauth flow."""
+    await setup_integration(hass, entry)
+    assert entry.state == config_entries.ConfigEntryState.LOADED
+
+    with requests_mock.Mocker() as mock_request:
+        mock_request.get(
+            "https://user-api.wall-box.com/users/signin",
+            json=authorisation_response,
+            status_code=200,
+        )
+        mock_request.get(
+            "https://api.wall-box.com/chargers/status/12345",
+            json=test_response,
+            status_code=200,
+        )
+
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={
+                "source": config_entries.SOURCE_REAUTH,
+                "entry_id": entry.entry_id,
+            },
+        )
+
+        result2 = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {
+                "station": "12345",
+                "username": "test-username",
+                "password": "test-password",
+            },
+        )
+
+    assert result2["type"] == "abort"
+    assert result2["reason"] == "reauth_successful"
+
+    await hass.config_entries.async_unload(entry.entry_id)
 
 
-def test_invalid_auth_class():
-    """Test invalid auth class."""
-    invalid_auth = InvalidAuth
-    assert invalid_auth
+async def test_form_reauth_invalid(hass: HomeAssistant, entry: MockConfigEntry) -> None:
+    """Test we handle reauth invalid flow."""
+    await setup_integration(hass, entry)
+    assert entry.state == config_entries.ConfigEntryState.LOADED
+
+    with requests_mock.Mocker() as mock_request:
+        mock_request.get(
+            "https://user-api.wall-box.com/users/signin",
+            text='{"jwt":"fakekeyhere","user_id":12345,"ttl":145656758,"error":false,"status":200}',
+            status_code=200,
+        )
+        mock_request.get(
+            "https://api.wall-box.com/chargers/status/12345",
+            json=test_response,
+            status_code=200,
+        )
+
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={
+                "source": config_entries.SOURCE_REAUTH,
+                "entry_id": entry.entry_id,
+            },
+        )
+
+        result2 = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {
+                "station": "12345678",
+                "username": "test-username",
+                "password": "test-password",
+            },
+        )
+
+    assert result2["type"] == "form"
+    assert result2["errors"] == {"base": "reauth_invalid"}
+
+    await hass.config_entries.async_unload(entry.entry_id)

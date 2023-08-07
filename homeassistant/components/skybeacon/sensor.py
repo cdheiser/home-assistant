@@ -1,4 +1,6 @@
 """Support for Skybeacon temperature/humidity Bluetooth LE sensors."""
+from __future__ import annotations
+
 import logging
 import threading
 from uuid import UUID
@@ -8,16 +10,23 @@ from pygatt.backends import Characteristic, GATTToolBackend
 from pygatt.exceptions import BLEError, NotConnectedError, NotificationTimeout
 import voluptuous as vol
 
-from homeassistant.components.sensor import PLATFORM_SCHEMA, SensorEntity
+from homeassistant.components.sensor import (
+    PLATFORM_SCHEMA,
+    SensorDeviceClass,
+    SensorEntity,
+)
 from homeassistant.const import (
     CONF_MAC,
     CONF_NAME,
     EVENT_HOMEASSISTANT_STOP,
     PERCENTAGE,
     STATE_UNKNOWN,
-    TEMP_CELSIUS,
+    UnitOfTemperature,
 )
+from homeassistant.core import HomeAssistant
 import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -42,7 +51,12 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
 )
 
 
-def setup_platform(hass, config, add_entities, discovery_info=None):
+def setup_platform(
+    hass: HomeAssistant,
+    config: ConfigType,
+    add_entities: AddEntitiesCallback,
+    discovery_info: DiscoveryInfoType | None = None,
+) -> None:
     """Set up the Skybeacon sensor."""
     name = config.get(CONF_NAME)
     mac = config.get(CONF_MAC)
@@ -64,7 +78,7 @@ def setup_platform(hass, config, add_entities, discovery_info=None):
 class SkybeaconHumid(SensorEntity):
     """Representation of a Skybeacon humidity sensor."""
 
-    _attr_unit_of_measurement = PERCENTAGE
+    _attr_native_unit_of_measurement = PERCENTAGE
 
     def __init__(self, name, mon):
         """Initialize a sensor."""
@@ -77,7 +91,7 @@ class SkybeaconHumid(SensorEntity):
         return self._name
 
     @property
-    def state(self):
+    def native_value(self):
         """Return the state of the device."""
         return self.mon.data["humid"]
 
@@ -90,7 +104,8 @@ class SkybeaconHumid(SensorEntity):
 class SkybeaconTemp(SensorEntity):
     """Representation of a Skybeacon temperature sensor."""
 
-    _attr_unit_of_measurement = TEMP_CELSIUS
+    _attr_device_class = SensorDeviceClass.TEMPERATURE
+    _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
 
     def __init__(self, name, mon):
         """Initialize a sensor."""
@@ -103,7 +118,7 @@ class SkybeaconTemp(SensorEntity):
         return self._name
 
     @property
-    def state(self):
+    def native_value(self):
         """Return the state of the device."""
         return self.mon.data["temp"]
 
@@ -143,7 +158,7 @@ class Monitor(threading.Thread, SensorEntity):
                     )
                 if SKIP_HANDLE_LOOKUP:
                     # HACK: inject handle mapping collected offline
-                    # pylint: disable=protected-access
+                    # pylint: disable-next=protected-access
                     device._characteristics[UUID(BLE_TEMP_UUID)] = cached_char
                 # Magic: writing this makes device happy
                 device.char_write_handle(0x1B, bytearray([255]), False)

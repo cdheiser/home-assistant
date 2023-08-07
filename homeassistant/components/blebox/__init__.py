@@ -1,29 +1,40 @@
 """The BleBox devices integration."""
 import logging
+from typing import Generic, TypeVar
 
+from blebox_uniapi.box import Box
 from blebox_uniapi.error import Error
-from blebox_uniapi.products import Products
+from blebox_uniapi.feature import Feature
 from blebox_uniapi.session import ApiHost
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_HOST, CONF_PORT
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.const import CONF_HOST, CONF_PORT, Platform
+from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
-from homeassistant.helpers.entity import Entity
+from homeassistant.helpers.entity import DeviceInfo, Entity
 
 from .const import DEFAULT_SETUP_TIMEOUT, DOMAIN, PRODUCT
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS = ["cover", "sensor", "switch", "air_quality", "light", "climate"]
+PLATFORMS = [
+    Platform.BINARY_SENSOR,
+    Platform.BUTTON,
+    Platform.CLIMATE,
+    Platform.COVER,
+    Platform.LIGHT,
+    Platform.SENSOR,
+    Platform.SWITCH,
+]
 
 PARALLEL_UPDATES = 0
+
+_FeatureT = TypeVar("_FeatureT", bound=Feature)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up BleBox devices from a config entry."""
-
     websession = async_get_clientsession(hass)
 
     host = entry.data[CONF_HOST]
@@ -33,7 +44,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     api_host = ApiHost(host, port, timeout, websession, hass.loop)
 
     try:
-        product = await Products.async_from_host(api_host)
+        product = await Box.async_from_host(api_host)
     except Error as ex:
         _LOGGER.error("Identify failed at %s:%d (%s)", api_host.host, api_host.port, ex)
         raise ConfigEntryNotReady from ex
@@ -42,12 +53,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     domain_entry = domain.setdefault(entry.entry_id, {})
     product = domain_entry.setdefault(PRODUCT, product)
 
-    hass.config_entries.async_setup_platforms(entry, PLATFORMS)
+    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     return True
 
 
-async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry):
+async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
@@ -57,54 +68,27 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry):
     return unload_ok
 
 
-@callback
-def create_blebox_entities(
-    hass, config_entry, async_add_entities, entity_klass, entity_type
-):
-    """Create entities from a BleBox product's features."""
-
-    product = hass.data[DOMAIN][config_entry.entry_id][PRODUCT]
-
-    entities = []
-    if entity_type in product.features:
-        for feature in product.features[entity_type]:
-            entities.append(entity_klass(feature))
-
-    async_add_entities(entities, True)
-
-
-class BleBoxEntity(Entity):
+class BleBoxEntity(Entity, Generic[_FeatureT]):
     """Implements a common class for entities representing a BleBox feature."""
 
-    def __init__(self, feature):
+    def __init__(self, feature: _FeatureT) -> None:
         """Initialize a BleBox entity."""
         self._feature = feature
+        self._attr_name = feature.full_name
+        self._attr_unique_id = feature.unique_id
+        product = feature.product
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, product.unique_id)},
+            manufacturer=product.brand,
+            model=product.model,
+            name=product.name,
+            sw_version=product.firmware_version,
+            configuration_url=f"http://{product.address}",
+        )
 
-    @property
-    def name(self):
-        """Return the internal entity name."""
-        return self._feature.full_name
-
-    @property
-    def unique_id(self):
-        """Return a unique id."""
-        return self._feature.unique_id
-
-    async def async_update(self):
+    async def async_update(self) -> None:
         """Update the entity state."""
         try:
             await self._feature.async_update()
         except Error as ex:
             _LOGGER.error("Updating '%s' failed: %s", self.name, ex)
-
-    @property
-    def device_info(self):
-        """Return device information for this entity."""
-        product = self._feature.product
-        return {
-            "identifiers": {(DOMAIN, product.unique_id)},
-            "name": product.name,
-            "manufacturer": product.brand,
-            "model": product.model,
-            "sw_version": product.firmware_version,
-        }

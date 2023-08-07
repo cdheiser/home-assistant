@@ -1,18 +1,25 @@
 """The tests for local file camera component."""
+from http import HTTPStatus
 from unittest import mock
 
+import pytest
+
 from homeassistant.components.local_file.const import DOMAIN, SERVICE_UPDATE_FILE_PATH
+from homeassistant.core import HomeAssistant
 from homeassistant.setup import async_setup_component
 
-from tests.common import mock_registry
+from tests.typing import ClientSessionGenerator
 
 
-async def test_loading_file(hass, hass_client):
+async def test_loading_file(
+    hass: HomeAssistant, hass_client: ClientSessionGenerator
+) -> None:
     """Test that it loads image from disk."""
-    mock_registry(hass)
-
     with mock.patch("os.path.isfile", mock.Mock(return_value=True)), mock.patch(
         "os.access", mock.Mock(return_value=True)
+    ), mock.patch(
+        "homeassistant.components.local_file.camera.mimetypes.guess_type",
+        mock.Mock(return_value=(None, None)),
     ):
         await async_setup_component(
             hass,
@@ -35,15 +42,15 @@ async def test_loading_file(hass, hass_client):
     ):
         resp = await client.get("/api/camera_proxy/camera.config_test")
 
-    assert resp.status == 200
+    assert resp.status == HTTPStatus.OK
     body = await resp.text()
     assert body == "hello"
 
 
-async def test_file_not_readable(hass, caplog):
+async def test_file_not_readable(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
     """Test a warning is shown setup when file is not readable."""
-    mock_registry(hass)
-
     with mock.patch("os.path.isfile", mock.Mock(return_value=True)), mock.patch(
         "os.access", mock.Mock(return_value=False)
     ):
@@ -65,7 +72,9 @@ async def test_file_not_readable(hass, caplog):
     assert "mock.file" in caplog.text
 
 
-async def test_camera_content_type(hass, hass_client):
+async def test_camera_content_type(
+    hass: HomeAssistant, hass_client: ClientSessionGenerator
+) -> None:
     """Test local_file camera content_type."""
     cam_config_jpg = {
         "name": "test_jpg",
@@ -107,38 +116,37 @@ async def test_camera_content_type(hass, hass_client):
         resp_3 = await client.get("/api/camera_proxy/camera.test_svg")
         resp_4 = await client.get("/api/camera_proxy/camera.test_no_ext")
 
-    assert resp_1.status == 200
+    assert resp_1.status == HTTPStatus.OK
     assert resp_1.content_type == "image/jpeg"
     body = await resp_1.text()
     assert body == image
 
-    assert resp_2.status == 200
+    assert resp_2.status == HTTPStatus.OK
     assert resp_2.content_type == "image/png"
     body = await resp_2.text()
     assert body == image
 
-    assert resp_3.status == 200
+    assert resp_3.status == HTTPStatus.OK
     assert resp_3.content_type == "image/svg+xml"
     body = await resp_3.text()
     assert body == image
 
     # default mime type
-    assert resp_4.status == 200
+    assert resp_4.status == HTTPStatus.OK
     assert resp_4.content_type == "image/jpeg"
     body = await resp_4.text()
     assert body == image
 
 
-async def test_update_file_path(hass):
+async def test_update_file_path(hass: HomeAssistant) -> None:
     """Test update_file_path service."""
     # Setup platform
-
-    mock_registry(hass)
-
     with mock.patch("os.path.isfile", mock.Mock(return_value=True)), mock.patch(
         "os.access", mock.Mock(return_value=True)
+    ), mock.patch(
+        "homeassistant.components.local_file.camera.mimetypes.guess_type",
+        mock.Mock(return_value=(None, None)),
     ):
-
         camera_1 = {"platform": "local_file", "file_path": "mock/path.jpg"}
         camera_2 = {
             "platform": "local_file",

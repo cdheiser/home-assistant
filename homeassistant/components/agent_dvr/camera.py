@@ -4,15 +4,15 @@ import logging
 
 from agent import AgentError
 
-from homeassistant.components.camera import SUPPORT_ON_OFF
-from homeassistant.components.mjpeg.camera import (
-    CONF_MJPEG_URL,
-    CONF_STILL_IMAGE_URL,
-    MjpegCamera,
-    filter_urllib3_logging,
+from homeassistant.components.camera import CameraEntityFeature
+from homeassistant.components.mjpeg import MjpegCamera, filter_urllib3_logging
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.helpers.entity_platform import (
+    AddEntitiesCallback,
+    async_get_current_platform,
 )
-from homeassistant.const import ATTR_ATTRIBUTION, CONF_NAME
-from homeassistant.helpers import entity_platform
 
 from .const import (
     ATTRIBUTION,
@@ -41,8 +41,10 @@ CAMERA_SERVICES = {
 
 
 async def async_setup_entry(
-    hass, config_entry, async_add_entities, discovery_info=None
-):
+    hass: HomeAssistant,
+    config_entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
     """Set up the Agent cameras."""
     filter_urllib3_logging()
     cameras = []
@@ -59,7 +61,7 @@ async def async_setup_entry(
 
     async_add_entities(cameras)
 
-    platform = entity_platform.async_get_current_platform()
+    platform = async_get_current_platform()
     for service, method in CAMERA_SERVICES.items():
         platform.async_register_entity_service(service, {}, method)
 
@@ -67,51 +69,47 @@ async def async_setup_entry(
 class AgentCamera(MjpegCamera):
     """Representation of an Agent Device Stream."""
 
+    _attr_attribution = ATTRIBUTION
+    _attr_should_poll = True  # Cameras default to False
+    _attr_supported_features = CameraEntityFeature.ON_OFF
+    _attr_has_entity_name = True
+    _attr_name = None
+
     def __init__(self, device):
         """Initialize as a subclass of MjpegCamera."""
-        self._servername = device.client.name
-        self.server_url = device.client._server_url
-
-        device_info = {
-            CONF_NAME: device.name,
-            CONF_MJPEG_URL: f"{self.server_url}{device.mjpeg_image_url}&size={device.mjpegStreamWidth}x{device.mjpegStreamHeight}",
-            CONF_STILL_IMAGE_URL: f"{self.server_url}{device.still_image_url}&size={device.mjpegStreamWidth}x{device.mjpegStreamHeight}",
-        }
         self.device = device
         self._removed = False
-        self._name = f"{self._servername} {device.name}"
-        self._unique_id = f"{device._client.unique}_{device.typeID}_{device.id}"
-        super().__init__(device_info)
+        self._attr_unique_id = f"{device._client.unique}_{device.typeID}_{device.id}"
+        super().__init__(
+            name=device.name,
+            mjpeg_url=f"{device.client._server_url}{device.mjpeg_image_url}&size={device.mjpegStreamWidth}x{device.mjpegStreamHeight}",
+            still_image_url=f"{device.client._server_url}{device.still_image_url}&size={device.mjpegStreamWidth}x{device.mjpegStreamHeight}",
+        )
+        self._attr_device_info = DeviceInfo(
+            identifiers={(AGENT_DOMAIN, self.unique_id)},
+            manufacturer="Agent",
+            model="Camera",
+            name=f"{device.client.name} {device.name}",
+            sw_version=device.client.version,
+        )
 
-    @property
-    def device_info(self):
-        """Return the device info for adding the entity to the agent object."""
-        return {
-            "identifiers": {(AGENT_DOMAIN, self._unique_id)},
-            "name": self._name,
-            "manufacturer": "Agent",
-            "model": "Camera",
-            "sw_version": self.device.client.version,
-        }
-
-    async def async_update(self):
+    async def async_update(self) -> None:
         """Update our state from the Agent API."""
         try:
             await self.device.update()
             if self._removed:
-                _LOGGER.debug("%s reacquired", self._name)
+                _LOGGER.debug("%s reacquired", self.name)
             self._removed = False
         except AgentError:
             # server still available - camera error
             if self.device.client.is_available and not self._removed:
-                _LOGGER.error("%s lost", self._name)
+                _LOGGER.error("%s lost", self.name)
                 self._removed = True
-
-    @property
-    def extra_state_attributes(self):
-        """Return the Agent DVR camera state attributes."""
-        return {
-            ATTR_ATTRIBUTION: ATTRIBUTION,
+        self._attr_icon = "mdi:camcorder-off"
+        if self.is_on:
+            self._attr_icon = "mdi:camcorder"
+        self._attr_available = self.device.client.is_available
+        self._attr_extra_state_attributes = {
             "editable": False,
             "enabled": self.is_on,
             "connected": self.connected,
@@ -120,11 +118,6 @@ class AgentCamera(MjpegCamera):
             "has_ptz": self.device.has_ptz,
             "alerts_enabled": self.device.alerts_active,
         }
-
-    @property
-    def should_poll(self) -> bool:
-        """Update the state periodically."""
-        return True
 
     @property
     def is_recording(self) -> bool:
@@ -142,19 +135,9 @@ class AgentCamera(MjpegCamera):
         return self.device.detected
 
     @property
-    def available(self) -> bool:
-        """Return True if entity is available."""
-        return self.device.client.is_available
-
-    @property
     def connected(self) -> bool:
         """Return True if entity is connected."""
         return self.device.connected
-
-    @property
-    def supported_features(self) -> int:
-        """Return supported features."""
-        return SUPPORT_ON_OFF
 
     @property
     def is_on(self) -> bool:
@@ -162,21 +145,9 @@ class AgentCamera(MjpegCamera):
         return self.device.online
 
     @property
-    def icon(self):
-        """Return the icon to use in the frontend, if any."""
-        if self.is_on:
-            return "mdi:camcorder"
-        return "mdi:camcorder-off"
-
-    @property
-    def motion_detection_enabled(self):
+    def motion_detection_enabled(self) -> bool:
         """Return the camera motion detection status."""
         return self.device.detector_active
-
-    @property
-    def unique_id(self) -> str:
-        """Return a unique identifier for this agent object."""
-        return self._unique_id
 
     async def async_enable_alerts(self):
         """Enable alerts."""
@@ -186,11 +157,11 @@ class AgentCamera(MjpegCamera):
         """Disable alerts."""
         await self.device.alerts_off()
 
-    async def async_enable_motion_detection(self):
+    async def async_enable_motion_detection(self) -> None:
         """Enable motion detection."""
         await self.device.detector_on()
 
-    async def async_disable_motion_detection(self):
+    async def async_disable_motion_detection(self) -> None:
         """Disable motion detection."""
         await self.device.detector_off()
 
@@ -202,7 +173,7 @@ class AgentCamera(MjpegCamera):
         """Stop recording."""
         await self.device.record_stop()
 
-    async def async_turn_on(self):
+    async def async_turn_on(self) -> None:
         """Enable the camera."""
         await self.device.enable()
 
@@ -210,6 +181,6 @@ class AgentCamera(MjpegCamera):
         """Take a snapshot."""
         await self.device.snapshot()
 
-    async def async_turn_off(self):
+    async def async_turn_off(self) -> None:
         """Disable the camera."""
         await self.device.disable()

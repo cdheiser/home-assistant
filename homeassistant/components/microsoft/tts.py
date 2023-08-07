@@ -1,12 +1,13 @@
 """Support for the Microsoft Cognitive Services text-to-speech service."""
-from http.client import HTTPException
 import logging
 
 from pycsspeechtts import pycsspeechtts
+from requests.exceptions import HTTPError
 import voluptuous as vol
 
 from homeassistant.components.tts import CONF_LANG, PLATFORM_SCHEMA, Provider
 from homeassistant.const import CONF_API_KEY, CONF_REGION, CONF_TYPE, PERCENTAGE
+from homeassistant.generated.microsoft_tts import SUPPORTED_LANGUAGES
 import homeassistant.helpers.config_validation as cv
 
 CONF_GENDER = "gender"
@@ -17,58 +18,12 @@ CONF_PITCH = "pitch"
 CONF_CONTOUR = "contour"
 _LOGGER = logging.getLogger(__name__)
 
-SUPPORTED_LANGUAGES = [
-    "ar-eg",
-    "ar-sa",
-    "ca-es",
-    "cs-cz",
-    "da-dk",
-    "de-at",
-    "de-ch",
-    "de-de",
-    "el-gr",
-    "en-au",
-    "en-ca",
-    "en-gb",
-    "en-ie",
-    "en-in",
-    "en-us",
-    "es-es",
-    "es-mx",
-    "fi-fi",
-    "fr-ca",
-    "fr-ch",
-    "fr-fr",
-    "he-il",
-    "hi-in",
-    "hu-hu",
-    "id-id",
-    "it-it",
-    "ja-jp",
-    "ko-kr",
-    "nb-no",
-    "nl-nl",
-    "pl-pl",
-    "pt-br",
-    "pt-pt",
-    "ro-ro",
-    "ru-ru",
-    "sk-sk",
-    "sl-si",
-    "sv-se",
-    "th-th",
-    "tr-tr",
-    "zh-cn",
-    "zh-hk",
-    "zh-tw",
-]
-
 GENDERS = ["Female", "Male"]
 
 DEFAULT_LANG = "en-us"
 DEFAULT_GENDER = "Female"
-DEFAULT_TYPE = "ZiraRUS"
-DEFAULT_OUTPUT = "audio-16khz-128kbitrate-mono-mp3"
+DEFAULT_TYPE = "JennyNeural"
+DEFAULT_OUTPUT = "audio-24khz-96kbitrate-mono-mp3"
 DEFAULT_RATE = 0
 DEFAULT_VOLUME = 0
 DEFAULT_PITCH = "default"
@@ -138,7 +93,17 @@ class MicrosoftProvider(Provider):
         """Return list of supported languages."""
         return SUPPORTED_LANGUAGES
 
-    def get_tts_audio(self, message, language, options=None):
+    @property
+    def supported_options(self):
+        """Return list of supported options like voice, emotion."""
+        return [CONF_GENDER, CONF_TYPE]
+
+    @property
+    def default_options(self):
+        """Return a dict include default options."""
+        return {CONF_GENDER: self._gender, CONF_TYPE: self._type}
+
+    def get_tts_audio(self, message, language, options):
         """Load TTS from Microsoft."""
         if language is None:
             language = self._lang
@@ -147,8 +112,8 @@ class MicrosoftProvider(Provider):
             trans = pycsspeechtts.TTSTranslator(self._apikey, self._region)
             data = trans.speak(
                 language=language,
-                gender=self._gender,
-                voiceType=self._type,
+                gender=options[CONF_GENDER],
+                voiceType=options[CONF_TYPE],
                 output=self._output,
                 rate=self._rate,
                 volume=self._volume,
@@ -156,7 +121,7 @@ class MicrosoftProvider(Provider):
                 contour=self._contour,
                 text=message,
             )
-        except HTTPException as ex:
+        except HTTPError as ex:
             _LOGGER.error("Error occurred for Microsoft TTS: %s", ex)
             return (None, None)
         return ("mp3", data)

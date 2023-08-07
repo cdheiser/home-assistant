@@ -3,27 +3,29 @@ from __future__ import annotations
 
 import asyncio
 from collections import OrderedDict
+from collections.abc import Mapping
 from datetime import timedelta
-from typing import Any, Dict, Mapping, Optional, Tuple, cast
+from typing import Any, cast
 
 import jwt
 
 from homeassistant import data_entry_flow
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.util import dt as dt_util
 
-from . import auth_store, models
+from . import auth_store, jwt_wrapper, models
 from .const import ACCESS_TOKEN_EXPIRATION, GROUP_ID_ADMIN
 from .mfa_modules import MultiFactorAuthModule, auth_mfa_module_from_config
 from .providers import AuthProvider, LoginFlow, auth_provider_from_config
 
 EVENT_USER_ADDED = "user_added"
+EVENT_USER_UPDATED = "user_updated"
 EVENT_USER_REMOVED = "user_removed"
 
-_MfaModuleDict = Dict[str, MultiFactorAuthModule]
-_ProviderKey = Tuple[str, Optional[str]]
-_ProviderDict = Dict[_ProviderKey, AuthProvider]
+_MfaModuleDict = dict[str, MultiFactorAuthModule]
+_ProviderKey = tuple[str, str | None]
+_ProviderDict = dict[_ProviderKey, AuthProvider]
 
 
 class InvalidAuthError(Exception):
@@ -85,7 +87,7 @@ class AuthManagerFlowManager(data_entry_flow.FlowManager):
 
     async def async_create_flow(
         self,
-        handler_key: Any,
+        handler_key: str,
         *,
         context: dict[str, Any] | None = None,
         data: dict[str, Any] | None = None,
@@ -102,7 +104,7 @@ class AuthManagerFlowManager(data_entry_flow.FlowManager):
         """Return a user as result of login flow."""
         flow = cast(LoginFlow, flow)
 
-        if result["type"] != data_entry_flow.RESULT_TYPE_CREATE_ENTRY:
+        if result["type"] != data_entry_flow.FlowResultType.CREATE_ENTRY:
             return result
 
         # we got final result
@@ -155,6 +157,7 @@ class AuthManager:
         self._providers = providers
         self._mfa_modules = mfa_modules
         self.login_flow = AuthManagerFlowManager(hass, self)
+        self._revoke_callbacks: dict[str, list[CALLBACK_TYPE]] = {}
 
     @property
     def auth_providers(self) -> list[AuthProvider]:
@@ -213,11 +216,19 @@ class AuthManager:
         return None
 
     async def async_create_system_user(
-        self, name: str, group_ids: list[str] | None = None
+        self,
+        name: str,
+        *,
+        group_ids: list[str] | None = None,
+        local_only: bool | None = None,
     ) -> models.User:
         """Create a system user."""
         user = await self._store.async_create_user(
-            name=name, system_generated=True, is_active=True, group_ids=group_ids or []
+            name=name,
+            system_generated=True,
+            is_active=True,
+            group_ids=group_ids or [],
+            local_only=local_only,
         )
 
         self.hass.bus.async_fire(EVENT_USER_ADDED, {"user_id": user.id})
@@ -225,13 +236,18 @@ class AuthManager:
         return user
 
     async def async_create_user(
-        self, name: str, group_ids: list[str] | None = None
+        self,
+        name: str,
+        *,
+        group_ids: list[str] | None = None,
+        local_only: bool | None = None,
     ) -> models.User:
         """Create a user."""
         kwargs: dict[str, Any] = {
             "name": name,
             "is_active": True,
             "group_ids": group_ids or [],
+            "local_only": local_only,
         }
 
         if await self._user_should_be_owner():
@@ -275,6 +291,12 @@ class AuthManager:
         self, user: models.User, credentials: models.Credentials
     ) -> None:
         """Link credentials to an existing user."""
+        linked_user = await self.async_get_user_by_credentials(credentials)
+        if linked_user == user:
+            return
+        if linked_user is not None:
+            raise ValueError("Credential is already linked to a user")
+
         await self._store.async_link_user(user, credentials)
 
     async def async_remove_user(self, user: models.User) -> None:
@@ -285,7 +307,7 @@ class AuthManager:
         ]
 
         if tasks:
-            await asyncio.wait(tasks)
+            await asyncio.gather(*tasks)
 
         await self._store.async_remove_user(user)
 
@@ -297,13 +319,18 @@ class AuthManager:
         name: str | None = None,
         is_active: bool | None = None,
         group_ids: list[str] | None = None,
+        local_only: bool | None = None,
     ) -> None:
         """Update a user."""
         kwargs: dict[str, Any] = {}
-        if name is not None:
-            kwargs["name"] = name
-        if group_ids is not None:
-            kwargs["group_ids"] = group_ids
+
+        for attr_name, value in (
+            ("name", name),
+            ("group_ids", group_ids),
+            ("local_only", local_only),
+        ):
+            if value is not None:
+                kwargs[attr_name] = value
         await self._store.async_update_user(user, **kwargs)
 
         if is_active is not None:
@@ -311,6 +338,8 @@ class AuthManager:
                 await self.async_activate_user(user)
             else:
                 await self.async_deactivate_user(user)
+
+        self.hass.bus.async_fire(EVENT_USER_UPDATED, {"user_id": user.id})
 
     async def async_activate_user(self, user: models.User) -> None:
         """Activate a user."""
@@ -327,8 +356,7 @@ class AuthManager:
         provider = self._async_get_auth_provider(credentials)
 
         if provider is not None and hasattr(provider, "async_will_remove_credentials"):
-            # https://github.com/python/mypy/issues/1424
-            await provider.async_will_remove_credentials(credentials)  # type: ignore
+            await provider.async_will_remove_credentials(credentials)
 
         await self._store.async_remove_credentials(credentials)
 
@@ -341,8 +369,7 @@ class AuthManager:
                 "System generated users cannot enable multi-factor auth module."
             )
 
-        module = self.get_auth_mfa_module(mfa_module_id)
-        if module is None:
+        if (module := self.get_auth_mfa_module(mfa_module_id)) is None:
             raise ValueError(f"Unable find multi-factor auth module: {mfa_module_id}")
 
         await module.async_setup_user(user.id, data)
@@ -356,8 +383,7 @@ class AuthManager:
                 "System generated users cannot disable multi-factor auth module."
             )
 
-        module = self.get_auth_mfa_module(mfa_module_id)
-        if module is None:
+        if (module := self.get_auth_mfa_module(mfa_module_id)) is None:
             raise ValueError(f"Unable find multi-factor auth module: {mfa_module_id}")
 
         await module.async_depose_user(user.id)
@@ -448,6 +474,28 @@ class AuthManager:
         """Delete a refresh token."""
         await self._store.async_remove_refresh_token(refresh_token)
 
+        callbacks = self._revoke_callbacks.pop(refresh_token.id, [])
+        for revoke_callback in callbacks:
+            revoke_callback()
+
+    @callback
+    def async_register_revoke_token_callback(
+        self, refresh_token_id: str, revoke_callback: CALLBACK_TYPE
+    ) -> CALLBACK_TYPE:
+        """Register a callback to be called when the refresh token id is revoked."""
+        if refresh_token_id not in self._revoke_callbacks:
+            self._revoke_callbacks[refresh_token_id] = []
+
+        callbacks = self._revoke_callbacks[refresh_token_id]
+        callbacks.append(revoke_callback)
+
+        @callback
+        def unregister() -> None:
+            if revoke_callback in callbacks:
+                callbacks.remove(revoke_callback)
+
+        return unregister
+
     @callback
     def async_create_access_token(
         self, refresh_token: models.RefreshToken, remote_ip: str | None = None
@@ -466,7 +514,7 @@ class AuthManager:
             },
             refresh_token.jwt_key,
             algorithm="HS256",
-        ).decode()
+        )
 
     @callback
     def _async_resolve_provider(
@@ -486,7 +534,8 @@ class AuthManager:
         )
         if provider is None:
             raise InvalidProvider(
-                f"Auth provider {refresh_token.credential.auth_provider_type}, {refresh_token.credential.auth_provider_id} not available"
+                f"Auth provider {refresh_token.credential.auth_provider_type},"
+                f" {refresh_token.credential.auth_provider_id} not available"
             )
         return provider
 
@@ -498,8 +547,7 @@ class AuthManager:
 
         Will raise InvalidAuthError on errors.
         """
-        provider = self._async_resolve_provider(refresh_token)
-        if provider:
+        if provider := self._async_resolve_provider(refresh_token):
             provider.async_validate_refresh_token(refresh_token, remote_ip)
 
     async def async_validate_access_token(
@@ -507,7 +555,7 @@ class AuthManager:
     ) -> models.RefreshToken | None:
         """Return refresh token if an access token is valid."""
         try:
-            unverif_claims = jwt.decode(token, verify=False)
+            unverif_claims = jwt_wrapper.unverified_hs256_token_decode(token)
         except jwt.InvalidTokenError:
             return None
 
@@ -523,7 +571,9 @@ class AuthManager:
             issuer = refresh_token.id
 
         try:
-            jwt.decode(token, jwt_key, leeway=10, issuer=issuer, algorithms=["HS256"])
+            jwt_wrapper.verify_and_decode(
+                token, jwt_key, leeway=10, issuer=issuer, algorithms=["HS256"]
+            )
         except jwt.InvalidTokenError:
             return None
 

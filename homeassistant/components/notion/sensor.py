@@ -1,88 +1,91 @@
 """Support for Notion sensors."""
-from homeassistant.components.sensor import SensorEntity
+from dataclasses import dataclass
+
+from aionotion.sensor.models import ListenerKind
+
+from homeassistant.components.sensor import (
+    SensorDeviceClass,
+    SensorEntity,
+    SensorEntityDescription,
+    SensorStateClass,
+)
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import TEMP_CELSIUS
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.const import UnitOfTemperature
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
 from . import NotionEntity
-from .const import DATA_COORDINATOR, DOMAIN, LOGGER, SENSOR_TEMPERATURE
+from .const import DOMAIN, SENSOR_MOLD, SENSOR_TEMPERATURE
+from .model import NotionEntityDescriptionMixin
 
-SENSOR_TYPES = {SENSOR_TEMPERATURE: ("Temperature", "temperature", TEMP_CELSIUS)}
+
+@dataclass
+class NotionSensorDescription(SensorEntityDescription, NotionEntityDescriptionMixin):
+    """Describe a Notion sensor."""
+
+
+SENSOR_DESCRIPTIONS = (
+    NotionSensorDescription(
+        key=SENSOR_MOLD,
+        translation_key="mold_risk",
+        icon="mdi:liquid-spot",
+        listener_kind=ListenerKind.MOLD,
+    ),
+    NotionSensorDescription(
+        key=SENSOR_TEMPERATURE,
+        device_class=SensorDeviceClass.TEMPERATURE,
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        state_class=SensorStateClass.MEASUREMENT,
+        listener_kind=ListenerKind.TEMPERATURE,
+    ),
+)
 
 
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
-):
+) -> None:
     """Set up Notion sensors based on a config entry."""
-    coordinator = hass.data[DOMAIN][DATA_COORDINATOR][entry.entry_id]
+    coordinator = hass.data[DOMAIN][entry.entry_id]
 
-    sensor_list = []
-    for task_id, task in coordinator.data["tasks"].items():
-        if task["task_type"] not in SENSOR_TYPES:
-            continue
-
-        name, device_class, unit = SENSOR_TYPES[task["task_type"]]
-        sensor = coordinator.data["sensors"][task["sensor_id"]]
-
-        sensor_list.append(
+    async_add_entities(
+        [
             NotionSensor(
                 coordinator,
-                task_id,
-                sensor["id"],
-                sensor["bridge"]["id"],
-                sensor["system_id"],
-                name,
-                device_class,
-                unit,
+                listener_id,
+                sensor.uuid,
+                sensor.bridge.id,
+                sensor.system_id,
+                description,
             )
-        )
-
-    async_add_entities(sensor_list)
+            for listener_id, listener in coordinator.data.listeners.items()
+            for description in SENSOR_DESCRIPTIONS
+            if description.listener_kind == listener.listener_kind
+            and (sensor := coordinator.data.sensors[listener.sensor_id])
+        ]
+    )
 
 
 class NotionSensor(NotionEntity, SensorEntity):
     """Define a Notion sensor."""
 
-    def __init__(
-        self,
-        coordinator: DataUpdateCoordinator,
-        task_id: str,
-        sensor_id: str,
-        bridge_id: str,
-        system_id: str,
-        name: str,
-        device_class: str,
-        unit: str,
-    ) -> None:
-        """Initialize the entity."""
-        super().__init__(
-            coordinator, task_id, sensor_id, bridge_id, system_id, name, device_class
-        )
-
-        self._unit = unit
+    @property
+    def native_unit_of_measurement(self) -> str | None:
+        """Return the unit of measurement of the sensor."""
+        if self.listener.listener_kind == ListenerKind.TEMPERATURE:
+            if not self.coordinator.data.user_preferences:
+                return None
+            if self.coordinator.data.user_preferences.celsius_enabled:
+                return UnitOfTemperature.CELSIUS
+            return UnitOfTemperature.FAHRENHEIT
+        return None
 
     @property
-    def state(self) -> str:
-        """Return the state of the sensor."""
-        return self._state
-
-    @property
-    def unit_of_measurement(self) -> str:
-        """Return the unit of measurement."""
-        return self._unit
-
-    @callback
-    def _async_update_from_latest_data(self) -> None:
-        """Fetch new state data for the sensor."""
-        task = self.coordinator.data["tasks"][self.task_id]
-
-        if task["task_type"] == SENSOR_TEMPERATURE:
-            self._state = round(float(task["status"]["value"]), 1)
-        else:
-            LOGGER.error(
-                "Unknown task type: %s: %s",
-                self.coordinator.data["sensors"][self._sensor_id],
-                task["task_type"],
-            )
+    def native_value(self) -> str | None:
+        """Return the value reported by the sensor."""
+        if not self.listener.status_localized:
+            return None
+        if self.listener.listener_kind == ListenerKind.TEMPERATURE:
+            # The Notion API only returns a localized string for temperature (e.g.
+            # "70°"); we simply remove the degree symbol:
+            return self.listener.status_localized.state[:-1]
+        return self.listener.status_localized.state

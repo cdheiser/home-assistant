@@ -2,25 +2,31 @@
 import asyncio
 import logging
 
+from httpx import ConnectTimeout
 from pypoint import PointSession
 import voluptuous as vol
 
 from homeassistant import config_entries
+from homeassistant.components import webhook
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
     CONF_CLIENT_ID,
     CONF_CLIENT_SECRET,
     CONF_TOKEN,
     CONF_WEBHOOK_ID,
+    Platform,
 )
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import config_validation as cv, device_registry
+from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.helpers import config_validation as cv, device_registry as dr
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.dispatcher import (
     async_dispatcher_connect,
     async_dispatcher_send,
 )
-from homeassistant.helpers.entity import Entity
+from homeassistant.helpers.entity import DeviceInfo, Entity
 from homeassistant.helpers.event import async_track_time_interval
+from homeassistant.helpers.typing import ConfigType
 from homeassistant.util.dt import as_local, parse_datetime, utc_from_timestamp
 
 from . import config_flow
@@ -39,7 +45,7 @@ _LOGGER = logging.getLogger(__name__)
 DATA_CONFIG_ENTRY_LOCK = "point_config_entry_lock"
 CONFIG_ENTRY_IS_SETUP = "point_config_entry_is_setup"
 
-PLATFORMS = ["binary_sensor", "sensor"]
+PLATFORMS = [Platform.BINARY_SENSOR, Platform.SENSOR]
 
 CONFIG_SCHEMA = vol.Schema(
     {
@@ -54,7 +60,7 @@ CONFIG_SCHEMA = vol.Schema(
 )
 
 
-async def async_setup(hass, config):
+async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Set up the Minut Point component."""
     if DOMAIN not in config:
         return True
@@ -84,14 +90,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
 
     session = PointSession(
-        hass.helpers.aiohttp_client.async_get_clientsession(),
+        async_get_clientsession(hass),
         entry.data["refresh_args"][CONF_CLIENT_ID],
         entry.data["refresh_args"][CONF_CLIENT_SECRET],
         token=entry.data[CONF_TOKEN],
         token_saver=token_saver,
     )
     try:
-        await session.ensure_active_token()
+        # the call to user() implicitly calls ensure_active_token() in authlib
+        await session.user()
+    except ConnectTimeout as err:
+        _LOGGER.debug("Connection Timeout")
+        raise ConfigEntryNotReady from err
     except Exception:  # pylint: disable=broad-except
         _LOGGER.error("Authentication Error")
         return False
@@ -110,8 +120,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 async def async_setup_webhook(hass: HomeAssistant, entry: ConfigEntry, session):
     """Set up a webhook to handle binary sensor events."""
     if CONF_WEBHOOK_ID not in entry.data:
-        webhook_id = hass.components.webhook.async_generate_id()
-        webhook_url = hass.components.webhook.async_generate_url(webhook_id)
+        webhook_id = webhook.async_generate_id()
+        webhook_url = webhook.async_generate_url(hass, webhook_id)
         _LOGGER.info("Registering new webhook at: %s", webhook_url)
 
         hass.config_entries.async_update_entry(
@@ -128,14 +138,14 @@ async def async_setup_webhook(hass: HomeAssistant, entry: ConfigEntry, session):
         ["*"],
     )
 
-    hass.components.webhook.async_register(
-        DOMAIN, "Point", entry.data[CONF_WEBHOOK_ID], handle_webhook
+    webhook.async_register(
+        hass, DOMAIN, "Point", entry.data[CONF_WEBHOOK_ID], handle_webhook
     )
 
 
-async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry):
+async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
-    hass.components.webhook.async_unregister(entry.data[CONF_WEBHOOK_ID])
+    webhook.async_unregister(hass, entry.data[CONF_WEBHOOK_ID])
     session = hass.data[DOMAIN].pop(entry.entry_id)
     await session.remove_webhook()
 
@@ -163,10 +173,12 @@ async def handle_webhook(hass, webhook_id, request):
 class MinutPointClient:
     """Get the latest data and update the states."""
 
-    def __init__(self, hass: HomeAssistant, config_entry: ConfigEntry, session):
+    def __init__(
+        self, hass: HomeAssistant, config_entry: ConfigEntry, session: PointSession
+    ) -> None:
         """Initialize the Minut data object."""
-        self._known_devices = set()
-        self._known_homes = set()
+        self._known_devices: set[str] = set()
+        self._known_homes: set[str] = set()
         self._hass = hass
         self._config_entry = config_entry
         self._is_available = True
@@ -180,7 +192,7 @@ class MinutPointClient:
 
     async def _sync(self):
         """Update local list of devices."""
-        if not await self._client.update() and self._is_available:
+        if not await self._client.update():
             self._is_available = False
             _LOGGER.warning("Device is unavailable")
             async_dispatcher_send(self._hass, SIGNAL_UPDATE_ENTITY)
@@ -243,6 +255,8 @@ class MinutPointClient:
 class MinutPointEntity(Entity):
     """Base Entity used by the sensors."""
 
+    _attr_should_poll = False
+
     def __init__(self, point_client, device_id, device_class):
         """Initialize the entity."""
         self._async_unsub_dispatcher_connect = None
@@ -303,20 +317,18 @@ class MinutPointEntity(Entity):
         return attrs
 
     @property
-    def device_info(self):
+    def device_info(self) -> DeviceInfo:
         """Return a device description for device registry."""
         device = self.device.device
-        return {
-            "connections": {
-                (device_registry.CONNECTION_NETWORK_MAC, device["device_mac"])
-            },
-            "identifieres": device["device_id"],
-            "manufacturer": "Minut",
-            "model": f"Point v{device['hardware_version']}",
-            "name": device["description"],
-            "sw_version": device["firmware"]["installed"],
-            "via_device": (DOMAIN, device["home"]),
-        }
+        return DeviceInfo(
+            connections={(dr.CONNECTION_NETWORK_MAC, device["device_mac"])},
+            identifiers={(DOMAIN, device["device_id"])},
+            manufacturer="Minut",
+            model=f"Point v{device['hardware_version']}",
+            name=device["description"],
+            sw_version=device["firmware"]["installed"],
+            via_device=(DOMAIN, device["home"]),
+        )
 
     @property
     def name(self):
@@ -333,11 +345,6 @@ class MinutPointEntity(Entity):
         """Return the last_update time for the device."""
         last_update = parse_datetime(self.device.last_update)
         return last_update
-
-    @property
-    def should_poll(self):
-        """No polling needed for point."""
-        return False
 
     @property
     def unique_id(self):

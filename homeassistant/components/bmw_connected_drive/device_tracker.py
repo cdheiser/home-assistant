@@ -1,83 +1,89 @@
-"""Device tracker for BMW Connected Drive vehicles."""
+"""Device tracker for MyBMW vehicles."""
+from __future__ import annotations
+
 import logging
+from typing import Any
 
-from homeassistant.components.device_tracker import SOURCE_TYPE_GPS
-from homeassistant.components.device_tracker.config_entry import TrackerEntity
+from bimmer_connected.vehicle import MyBMWVehicle
 
-from . import DOMAIN as BMW_DOMAIN, BMWConnectedDriveBaseEntity
-from .const import CONF_ACCOUNT, DATA_ENTRIES
+from homeassistant.components.device_tracker import SourceType, TrackerEntity
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+
+from . import BMWBaseEntity
+from .const import ATTR_DIRECTION, DOMAIN
+from .coordinator import BMWDataUpdateCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
 
-async def async_setup_entry(hass, config_entry, async_add_entities):
-    """Set up the BMW ConnectedDrive tracker from config entry."""
-    account = hass.data[BMW_DOMAIN][DATA_ENTRIES][config_entry.entry_id][CONF_ACCOUNT]
-    entities = []
+async def async_setup_entry(
+    hass: HomeAssistant,
+    config_entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
+    """Set up the MyBMW tracker from config entry."""
+    coordinator: BMWDataUpdateCoordinator = hass.data[DOMAIN][config_entry.entry_id]
+    entities: list[BMWDeviceTracker] = []
 
-    for vehicle in account.account.vehicles:
-        entities.append(BMWDeviceTracker(account, vehicle))
-        if not vehicle.state.is_vehicle_tracking_enabled:
+    for vehicle in coordinator.account.vehicles:
+        entities.append(BMWDeviceTracker(coordinator, vehicle))
+        if not vehicle.is_vehicle_tracking_enabled:
             _LOGGER.info(
-                "Tracking is (currently) disabled for vehicle %s (%s), defaulting to unknown",
+                (
+                    "Tracking is (currently) disabled for vehicle %s (%s), defaulting"
+                    " to unknown"
+                ),
                 vehicle.name,
                 vehicle.vin,
             )
-    async_add_entities(entities, True)
+    async_add_entities(entities)
 
 
-class BMWDeviceTracker(BMWConnectedDriveBaseEntity, TrackerEntity):
-    """BMW Connected Drive device tracker."""
+class BMWDeviceTracker(BMWBaseEntity, TrackerEntity):
+    """MyBMW device tracker."""
 
-    def __init__(self, account, vehicle):
+    _attr_force_update = False
+    _attr_icon = "mdi:car"
+
+    def __init__(
+        self,
+        coordinator: BMWDataUpdateCoordinator,
+        vehicle: MyBMWVehicle,
+    ) -> None:
         """Initialize the Tracker."""
-        super().__init__(account, vehicle)
+        super().__init__(coordinator, vehicle)
 
-        self._unique_id = vehicle.vin
-        self._location = (
-            vehicle.state.gps_position if vehicle.state.gps_position else (None, None)
-        )
-        self._name = vehicle.name
+        self._attr_unique_id = vehicle.vin
+        self._attr_name = None
 
     @property
-    def latitude(self):
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return entity specific state attributes."""
+        return {**self._attrs, ATTR_DIRECTION: self.vehicle.vehicle_location.heading}
+
+    @property
+    def latitude(self) -> float | None:
         """Return latitude value of the device."""
-        return self._location[0] if self._location else None
-
-    @property
-    def longitude(self):
-        """Return longitude value of the device."""
-        return self._location[1] if self._location else None
-
-    @property
-    def name(self):
-        """Return the name of the device."""
-        return self._name
-
-    @property
-    def unique_id(self):
-        """Return the unique ID."""
-        return self._unique_id
-
-    @property
-    def source_type(self):
-        """Return the source type, eg gps or router, of the device."""
-        return SOURCE_TYPE_GPS
-
-    @property
-    def icon(self):
-        """Return the icon to use in the frontend, if any."""
-        return "mdi:car"
-
-    @property
-    def force_update(self):
-        """All updates do not need to be written to the state machine."""
-        return False
-
-    def update(self):
-        """Update state of the decvice tracker."""
-        self._location = (
-            self._vehicle.state.gps_position
-            if self._vehicle.state.is_vehicle_tracking_enabled
-            else (None, None)
+        return (
+            self.vehicle.vehicle_location.location[0]
+            if self.vehicle.is_vehicle_tracking_enabled
+            and self.vehicle.vehicle_location.location
+            else None
         )
+
+    @property
+    def longitude(self) -> float | None:
+        """Return longitude value of the device."""
+        return (
+            self.vehicle.vehicle_location.location[1]
+            if self.vehicle.is_vehicle_tracking_enabled
+            and self.vehicle.vehicle_location.location
+            else None
+        )
+
+    @property
+    def source_type(self) -> SourceType:
+        """Return the source type, eg gps or router, of the device."""
+        return SourceType.GPS

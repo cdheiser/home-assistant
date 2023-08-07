@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+from pydeconz.websocket import Signal
 import pytest
 
 from tests.components.light.conftest import mock_light_profiles  # noqa: F401
@@ -19,10 +20,10 @@ def mock_deconz_websocket():
 
             if data:
                 mock.return_value.data = data
-                await pydeconz_gateway_session_handler(signal="data")
+                await pydeconz_gateway_session_handler(signal=Signal.DATA)
             elif state:
                 mock.return_value.state = state
-                await pydeconz_gateway_session_handler(signal="state")
+                await pydeconz_gateway_session_handler(signal=Signal.CONNECTION_STATE)
             else:
                 raise NotImplementedError
 

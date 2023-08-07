@@ -14,9 +14,4 @@ API_WIFI_STATUS = "wifi_status"
 
 CONF_UID = "uid"
 
-DATA_CLIENT = "client"
-DATA_COORDINATOR = "coordinator"
-DATA_PAIRED_SENSOR_MANAGER = "paired_sensor_manager"
-DATA_UNSUB_DISPATCHER_CONNECT = "unsub_dispatcher_connect"
-
 SIGNAL_PAIRED_SENSOR_COORDINATOR_ADDED = "guardian_paired_sensor_coordinator_added_{0}"

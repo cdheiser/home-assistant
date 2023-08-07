@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import logging
-import telnetlib
+import telnetlib  # pylint: disable=deprecated-module
 from typing import Final
 
 import voluptuous as vol
@@ -31,14 +31,16 @@ PLATFORM_SCHEMA: Final = BASE_PLATFORM_SCHEMA.extend(
 )
 
 
-def get_scanner(hass: HomeAssistant, config: ConfigType) -> DeviceScanner | None:
+def get_scanner(
+    hass: HomeAssistant, config: ConfigType
+) -> ActiontecDeviceScanner | None:
     """Validate the configuration and return an Actiontec scanner."""
     scanner = ActiontecDeviceScanner(config[DOMAIN])
     return scanner if scanner.success_init else None
 
 
 class ActiontecDeviceScanner(DeviceScanner):
-    """This class queries an actiontec router for connected devices."""
+    """Class which queries an actiontec router for connected devices."""
 
     def __init__(self, config: ConfigType) -> None:
         """Initialize the scanner."""
@@ -71,8 +73,7 @@ class ActiontecDeviceScanner(DeviceScanner):
         if not self.success_init:
             return False
 
-        actiontec_data = self.get_actiontec_data()
-        if actiontec_data is None:
+        if (actiontec_data := self.get_actiontec_data()) is None:
             return False
         self.last_results = [
             device for device in actiontec_data if device.timevalid > -60

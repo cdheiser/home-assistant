@@ -1,6 +1,7 @@
 """Config flow for Ambiclimate."""
 import logging
 
+from aiohttp import web
 import ambiclimate
 
 from homeassistant import config_entries
@@ -9,6 +10,7 @@ from homeassistant.const import CONF_CLIENT_ID, CONF_CLIENT_SECRET
 from homeassistant.core import callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.network import get_url
+from homeassistant.helpers.storage import Store
 
 from .const import (
     AUTH_CALLBACK_NAME,
@@ -43,7 +45,7 @@ class AmbiclimateFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
 
     VERSION = 1
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize flow."""
         self._registered_view = False
         self._oauth = None
@@ -85,9 +87,7 @@ class AmbiclimateFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         """Received code for authentication."""
         self._async_abort_entries_match()
 
-        token_info = await self._get_token_info(code)
-
-        if token_info is None:
+        if await self._get_token_info(code) is None:
             return self.async_abort(reason="access_token")
 
         config = self.hass.data[DATA_AMBICLIMATE_IMPL].copy()
@@ -103,7 +103,7 @@ class AmbiclimateFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             _LOGGER.error("Failed to get access token", exc_info=True)
             return None
 
-        store = self.hass.helpers.storage.Store(STORAGE_VERSION, STORAGE_KEY)
+        store = Store(self.hass, STORAGE_VERSION, STORAGE_KEY)
         await store.async_save(token_info)
 
         return token_info
@@ -125,7 +125,7 @@ class AmbiclimateFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         )
 
     def _cb_url(self):
-        return f"{get_url(self.hass)}{AUTH_CALLBACK_PATH}"
+        return f"{get_url(self.hass, prefer_external=True)}{AUTH_CALLBACK_PATH}"
 
     async def _get_authorize_url(self):
         oauth = self._generate_oauth()
@@ -139,10 +139,9 @@ class AmbiclimateAuthCallbackView(HomeAssistantView):
     url = AUTH_CALLBACK_PATH
     name = AUTH_CALLBACK_NAME
 
-    async def get(self, request):
+    async def get(self, request: web.Request) -> str:
         """Receive authorization token."""
-        code = request.query.get("code")
-        if code is None:
+        if (code := request.query.get("code")) is None:
             return "No code"
         hass = request.app["hass"]
         hass.async_create_task(

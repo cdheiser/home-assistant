@@ -1,5 +1,8 @@
 """Jabber (XMPP) notification service."""
+from __future__ import annotations
+
 from concurrent.futures import TimeoutError as FutTimeoutError
+from http import HTTPStatus
 import logging
 import mimetypes
 import pathlib
@@ -29,10 +32,11 @@ from homeassistant.const import (
     CONF_RESOURCE,
     CONF_ROOM,
     CONF_SENDER,
-    HTTP_BAD_REQUEST,
 )
+from homeassistant.core import HomeAssistant
 import homeassistant.helpers.config_validation as cv
 import homeassistant.helpers.template as template_helper
+from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -64,7 +68,11 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
 )
 
 
-async def async_get_service(hass, config, discovery_info=None):
+async def async_get_service(
+    hass: HomeAssistant,
+    config: ConfigType,
+    discovery_info: DiscoveryInfoType | None = None,
+) -> XmppNotificationService:
     """Get the Jabber (XMPP) notification service."""
     return XmppNotificationService(
         config.get(CONF_SENDER),
@@ -159,6 +167,9 @@ async def async_send_message(  # noqa: C901
 
         async def start(self, event):
             """Start the communication and sends the message."""
+            if room:
+                _LOGGER.debug("Joining room %s", room)
+                await self.plugin["xep_0045"].join_muc_wait(room, sender, seconds=0)
             # Sending image and message independently from each other
             if data:
                 await self.send_file(timeout=timeout)
@@ -173,9 +184,6 @@ async def async_send_message(  # noqa: C901
             Send XMPP file message using OOB (XEP_0066) and
             HTTP Upload (XEP_0363)
             """
-            if room:
-                self.plugin["xep_0045"].join_muc(room, sender)
-
             try:
                 # Uploading with XEP_0363
                 _LOGGER.debug("Timeout set to %ss", timeout)
@@ -190,7 +198,9 @@ async def async_send_message(  # noqa: C901
                         _LOGGER.info("Sending file to %s", recipient)
                         message = self.Message(sto=recipient, stype="chat")
                     message["body"] = url
-                    message["oob"]["url"] = url
+                    message["oob"][  # pylint: disable=invalid-sequence-index
+                        "url"
+                    ] = url
                     try:
                         message.send()
                     except (IqError, IqTimeout, XMPPError) as ex:
@@ -265,7 +275,7 @@ async def async_send_message(  # noqa: C901
 
             result = await hass.async_add_executor_job(get_url, url)
 
-            if result.status_code >= HTTP_BAD_REQUEST:
+            if result.status_code >= HTTPStatus.BAD_REQUEST:
                 _LOGGER.error("Could not load file from %s", url)
                 return None
 
@@ -311,8 +321,7 @@ async def async_send_message(  # noqa: C901
             filesize = len(input_file)
             _LOGGER.debug("Filesize is %s bytes", filesize)
 
-            content_type = mimetypes.guess_type(path)[0]
-            if content_type is None:
+            if (content_type := mimetypes.guess_type(path)[0]) is None:
                 content_type = DEFAULT_CONTENT_TYPE
             _LOGGER.debug("Content type is %s", content_type)
 
@@ -334,8 +343,7 @@ async def async_send_message(  # noqa: C901
             """Send a text only message to a room or a recipient."""
             try:
                 if room:
-                    _LOGGER.debug("Joining room %s", room)
-                    self.plugin["xep_0045"].join_muc(room, sender)
+                    _LOGGER.debug("Sending message to room %s", room)
                     self.send_message(mto=room, mbody=message, mtype="groupchat")
                 else:
                     for recipient in recipients:
@@ -346,7 +354,6 @@ async def async_send_message(  # noqa: C901
             except NotConnectedError as ex:
                 _LOGGER.error("Connection error %s", ex)
 
-        # pylint: disable=no-self-use
         def get_random_filename(self, filename, extension=None):
             """Return a random filename, leaving the extension intact."""
             if extension is None:

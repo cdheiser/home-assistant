@@ -1,13 +1,15 @@
 """Test the Rachio config flow."""
 from unittest.mock import MagicMock, patch
 
-from homeassistant import config_entries, setup
+from homeassistant import config_entries
+from homeassistant.components import zeroconf
 from homeassistant.components.rachio.const import (
     CONF_CUSTOM_URL,
     CONF_MANUAL_RUN_MINS,
     DOMAIN,
 )
 from homeassistant.const import CONF_API_KEY
+from homeassistant.core import HomeAssistant
 
 from tests.common import MockConfigEntry
 
@@ -21,9 +23,9 @@ def _mock_rachio_return_value(get=None, info=None):
     return rachio_mock
 
 
-async def test_form(hass):
+async def test_form(hass: HomeAssistant) -> None:
     """Test we get the form."""
-    await setup.async_setup_component(hass, "persistent_notification", {})
+
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": config_entries.SOURCE_USER}
     )
@@ -61,7 +63,7 @@ async def test_form(hass):
     assert len(mock_setup_entry.mock_calls) == 1
 
 
-async def test_form_invalid_auth(hass):
+async def test_form_invalid_auth(hass: HomeAssistant) -> None:
     """Test we handle invalid auth."""
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": config_entries.SOURCE_USER}
@@ -83,7 +85,7 @@ async def test_form_invalid_auth(hass):
     assert result2["errors"] == {"base": "invalid_auth"}
 
 
-async def test_form_cannot_connect(hass):
+async def test_form_cannot_connect(hass: HomeAssistant) -> None:
     """Test we handle cannot connect error."""
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": config_entries.SOURCE_USER}
@@ -105,14 +107,21 @@ async def test_form_cannot_connect(hass):
     assert result2["errors"] == {"base": "cannot_connect"}
 
 
-async def test_form_homekit(hass):
+async def test_form_homekit(hass: HomeAssistant) -> None:
     """Test that we abort from homekit if rachio is already setup."""
-    await setup.async_setup_component(hass, "persistent_notification", {})
 
     result = await hass.config_entries.flow.async_init(
         DOMAIN,
         context={"source": config_entries.SOURCE_HOMEKIT},
-        data={"properties": {"id": "AA:BB:CC:DD:EE:FF"}},
+        data=zeroconf.ZeroconfServiceInfo(
+            host="mock_host",
+            addresses=["mock_host"],
+            hostname="mock_hostname",
+            name="mock_name",
+            port=None,
+            properties={zeroconf.ATTR_PROPERTIES_ID: "AA:BB:CC:DD:EE:FF"},
+            type="mock_type",
+        ),
     )
     assert result["type"] == "form"
     assert result["errors"] == {}
@@ -129,7 +138,41 @@ async def test_form_homekit(hass):
     result = await hass.config_entries.flow.async_init(
         DOMAIN,
         context={"source": config_entries.SOURCE_HOMEKIT},
-        data={"properties": {"id": "AA:BB:CC:DD:EE:FF"}},
+        data=zeroconf.ZeroconfServiceInfo(
+            host="mock_host",
+            addresses=["mock_host"],
+            hostname="mock_hostname",
+            name="mock_name",
+            port=None,
+            properties={zeroconf.ATTR_PROPERTIES_ID: "AA:BB:CC:DD:EE:FF"},
+            type="mock_type",
+        ),
+    )
+    assert result["type"] == "abort"
+    assert result["reason"] == "already_configured"
+
+
+async def test_form_homekit_ignored(hass: HomeAssistant) -> None:
+    """Test that we abort from homekit if rachio is ignored."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id="AA:BB:CC:DD:EE:FF",
+        source=config_entries.SOURCE_IGNORE,
+    )
+    entry.add_to_hass(hass)
+
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={"source": config_entries.SOURCE_HOMEKIT},
+        data=zeroconf.ZeroconfServiceInfo(
+            host="mock_host",
+            addresses=["mock_host"],
+            hostname="mock_hostname",
+            name="mock_name",
+            port=None,
+            properties={zeroconf.ATTR_PROPERTIES_ID: "AA:BB:CC:DD:EE:FF"},
+            type="mock_type",
+        ),
     )
     assert result["type"] == "abort"
     assert result["reason"] == "already_configured"

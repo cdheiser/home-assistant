@@ -1,14 +1,27 @@
 """Support for Tile device trackers."""
+from __future__ import annotations
+
 import logging
 
-from homeassistant.components.device_tracker.config_entry import TrackerEntity
-from homeassistant.components.device_tracker.const import SOURCE_TYPE_GPS
-from homeassistant.config_entries import SOURCE_IMPORT
-from homeassistant.const import ATTR_ATTRIBUTION, CONF_PASSWORD, CONF_USERNAME
-from homeassistant.core import callback
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from pytile.tile import Tile
 
-from . import DATA_COORDINATOR, DATA_TILE, DOMAIN
+from homeassistant.components.device_tracker import (
+    AsyncSeeCallback,
+    SourceType,
+    TrackerEntity,
+)
+from homeassistant.config_entries import SOURCE_IMPORT, ConfigEntry
+from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
+from homeassistant.helpers.update_coordinator import (
+    CoordinatorEntity,
+    DataUpdateCoordinator,
+)
+
+from . import TileData
+from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -17,27 +30,34 @@ ATTR_CONNECTION_STATE = "connection_state"
 ATTR_IS_DEAD = "is_dead"
 ATTR_IS_LOST = "is_lost"
 ATTR_LAST_LOST_TIMESTAMP = "last_lost_timestamp"
+ATTR_LAST_TIMESTAMP = "last_timestamp"
 ATTR_RING_STATE = "ring_state"
 ATTR_TILE_NAME = "tile_name"
 ATTR_VOIP_STATE = "voip_state"
 
-DEFAULT_ATTRIBUTION = "Data provided by Tile"
 DEFAULT_ICON = "mdi:view-grid"
 
 
-async def async_setup_entry(hass, entry, async_add_entities):
+async def async_setup_entry(
+    hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
+) -> None:
     """Set up Tile device trackers."""
+    data: TileData = hass.data[DOMAIN][entry.entry_id]
+
     async_add_entities(
         [
-            TileDeviceTracker(
-                hass.data[DOMAIN][DATA_COORDINATOR][entry.entry_id][tile_uuid], tile
-            )
-            for tile_uuid, tile in hass.data[DOMAIN][DATA_TILE][entry.entry_id].items()
+            TileDeviceTracker(entry, data.coordinators[tile_uuid], tile)
+            for tile_uuid, tile in data.tiles.items()
         ]
     )
 
 
-async def async_setup_scanner(hass, config, async_see, discovery_info=None):
+async def async_setup_scanner(
+    hass: HomeAssistant,
+    config: ConfigType,
+    async_see: AsyncSeeCallback,
+    discovery_info: DiscoveryInfoType | None = None,
+) -> bool:
     """Detect a legacy configuration and import it."""
     hass.async_create_task(
         hass.config_entries.flow.async_init(
@@ -58,91 +78,78 @@ async def async_setup_scanner(hass, config, async_see, discovery_info=None):
     return True
 
 
-class TileDeviceTracker(CoordinatorEntity, TrackerEntity):
+class TileDeviceTracker(CoordinatorEntity[DataUpdateCoordinator[None]], TrackerEntity):
     """Representation of a network infrastructure device."""
 
-    def __init__(self, coordinator, tile):
+    _attr_icon = DEFAULT_ICON
+
+    def __init__(
+        self, entry: ConfigEntry, coordinator: DataUpdateCoordinator[None], tile: Tile
+    ) -> None:
         """Initialize."""
         super().__init__(coordinator)
-        self._attrs = {ATTR_ATTRIBUTION: DEFAULT_ATTRIBUTION}
+
+        self._attr_extra_state_attributes = {}
+        self._attr_name = tile.name
+        self._attr_unique_id = f"{entry.data[CONF_USERNAME]}_{tile.uuid}"
+        self._entry = entry
         self._tile = tile
 
     @property
-    def available(self):
+    def available(self) -> bool:
         """Return if entity is available."""
-        return self.coordinator.last_update_success and not self._tile.dead
+        return super().available and not self._tile.dead
 
     @property
-    def battery_level(self):
-        """Return the battery level of the device.
-
-        Percentage from 0-100.
-        """
-        return None
-
-    @property
-    def extra_state_attributes(self):
-        """Return the device state attributes."""
-        return self._attrs
-
-    @property
-    def icon(self):
-        """Return the icon."""
-        return DEFAULT_ICON
-
-    @property
-    def location_accuracy(self):
+    def location_accuracy(self) -> int:
         """Return the location accuracy of the device.
 
         Value in meters.
         """
-        return self._tile.accuracy
+        if not self._tile.accuracy:
+            return super().location_accuracy
+        return int(self._tile.accuracy)
 
     @property
-    def latitude(self) -> float:
+    def latitude(self) -> float | None:
         """Return latitude value of the device."""
+        if not self._tile.latitude:
+            return None
         return self._tile.latitude
 
     @property
-    def longitude(self) -> float:
+    def longitude(self) -> float | None:
         """Return longitude value of the device."""
+        if not self._tile.longitude:
+            return None
         return self._tile.longitude
 
     @property
-    def name(self):
-        """Return the name."""
-        return self._tile.name
-
-    @property
-    def unique_id(self):
-        """Return the unique ID of the entity."""
-        return f"tile_{self._tile.uuid}"
-
-    @property
-    def source_type(self):
+    def source_type(self) -> SourceType:
         """Return the source type, eg gps or router, of the device."""
-        return SOURCE_TYPE_GPS
+        return SourceType.GPS
 
     @callback
-    def _handle_coordinator_update(self):
+    def _handle_coordinator_update(self) -> None:
         """Respond to a DataUpdateCoordinator update."""
         self._update_from_latest_data()
         self.async_write_ha_state()
 
     @callback
-    def _update_from_latest_data(self):
+    def _update_from_latest_data(self) -> None:
         """Update the entity from the latest data."""
-        self._attrs.update(
+        self._attr_extra_state_attributes.update(
             {
                 ATTR_ALTITUDE: self._tile.altitude,
                 ATTR_IS_LOST: self._tile.lost,
                 ATTR_LAST_LOST_TIMESTAMP: self._tile.lost_timestamp,
+                ATTR_LAST_TIMESTAMP: self._tile.last_timestamp,
                 ATTR_RING_STATE: self._tile.ring_state,
                 ATTR_VOIP_STATE: self._tile.voip_state,
             }
         )
 
-    async def async_added_to_hass(self):
+    async def async_added_to_hass(self) -> None:
         """Handle entity which will be added."""
         await super().async_added_to_hass()
         self._update_from_latest_data()

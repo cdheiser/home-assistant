@@ -4,8 +4,9 @@ from unittest.mock import patch
 import pytest
 
 from homeassistant import config_entries
-from homeassistant.components import konnected
+from homeassistant.components import konnected, ssdp
 from homeassistant.components.konnected import config_flow
+from homeassistant.core import HomeAssistant
 
 from tests.common import MockConfigEntry
 
@@ -26,7 +27,7 @@ async def mock_panel_fixture():
         yield konn_client
 
 
-async def test_flow_works(hass, mock_panel):
+async def test_flow_works(hass: HomeAssistant, mock_panel) -> None:
     """Test config flow ."""
     result = await hass.config_entries.flow.async_init(
         config_flow.DOMAIN, context={"source": config_entries.SOURCE_USER}
@@ -63,7 +64,7 @@ async def test_flow_works(hass, mock_panel):
     )
 
 
-async def test_pro_flow_works(hass, mock_panel):
+async def test_pro_flow_works(hass: HomeAssistant, mock_panel) -> None:
     """Test config flow ."""
     result = await hass.config_entries.flow.async_init(
         config_flow.DOMAIN, context={"source": config_entries.SOURCE_USER}
@@ -102,21 +103,26 @@ async def test_pro_flow_works(hass, mock_panel):
     )
 
 
-async def test_ssdp(hass, mock_panel):
+async def test_ssdp(hass: HomeAssistant, mock_panel) -> None:
     """Test a panel being discovered."""
     mock_panel.get_status.return_value = {
         "mac": "11:22:33:44:55:66",
         "model": "Konnected",
     }
 
+    # Test success
     result = await hass.config_entries.flow.async_init(
         config_flow.DOMAIN,
         context={"source": config_entries.SOURCE_SSDP},
-        data={
-            "ssdp_location": "http://1.2.3.4:1234/Device.xml",
-            "manufacturer": config_flow.KONN_MANUFACTURER,
-            "modelName": config_flow.KONN_MODEL,
-        },
+        data=ssdp.SsdpServiceInfo(
+            ssdp_usn="mock_usn",
+            ssdp_st="mock_st",
+            ssdp_location="http://1.2.3.4:1234/Device.xml",
+            upnp={
+                "manufacturer": config_flow.KONN_MANUFACTURER,
+                "modelName": config_flow.KONN_MODEL,
+            },
+        ),
     )
 
     assert result["type"] == "form"
@@ -128,8 +134,103 @@ async def test_ssdp(hass, mock_panel):
         "port": 1234,
     }
 
+    # Test abort if connection failed
+    mock_panel.get_status.side_effect = config_flow.CannotConnect
+    result = await hass.config_entries.flow.async_init(
+        config_flow.DOMAIN,
+        context={"source": config_entries.SOURCE_SSDP},
+        data=ssdp.SsdpServiceInfo(
+            ssdp_usn="mock_usn",
+            ssdp_st="mock_st",
+            ssdp_location="http://1.2.3.4:1234/Device.xml",
+            upnp={
+                "manufacturer": config_flow.KONN_MANUFACTURER,
+                "modelName": config_flow.KONN_MODEL,
+            },
+        ),
+    )
 
-async def test_import_no_host_user_finish(hass, mock_panel):
+    assert result["type"] == "abort"
+    assert result["reason"] == "cannot_connect"
+
+    # Test abort if invalid data
+    mock_panel.get_status.side_effect = KeyError
+    result = await hass.config_entries.flow.async_init(
+        config_flow.DOMAIN,
+        context={"source": config_entries.SOURCE_SSDP},
+        data=ssdp.SsdpServiceInfo(
+            ssdp_usn="mock_usn",
+            ssdp_st="mock_st",
+            ssdp_location="http://1.2.3.4:1234/Device.xml",
+            upnp={},
+        ),
+    )
+
+    assert result["type"] == "abort"
+    assert result["reason"] == "unknown"
+
+    # Test abort if invalid manufacturer
+    result = await hass.config_entries.flow.async_init(
+        config_flow.DOMAIN,
+        context={"source": config_entries.SOURCE_SSDP},
+        data=ssdp.SsdpServiceInfo(
+            ssdp_usn="mock_usn",
+            ssdp_st="mock_st",
+            ssdp_location="http://1.2.3.4:1234/Device.xml",
+            upnp={
+                "manufacturer": "SHOULD_FAIL",
+                "modelName": config_flow.KONN_MODEL,
+            },
+        ),
+    )
+
+    assert result["type"] == "abort"
+    assert result["reason"] == "not_konn_panel"
+
+    # Test abort if invalid model
+    result = await hass.config_entries.flow.async_init(
+        config_flow.DOMAIN,
+        context={"source": config_entries.SOURCE_SSDP},
+        data=ssdp.SsdpServiceInfo(
+            ssdp_usn="mock_usn",
+            ssdp_st="mock_st",
+            ssdp_location="http://1.2.3.4:1234/Device.xml",
+            upnp={
+                "manufacturer": config_flow.KONN_MANUFACTURER,
+                "modelName": "SHOULD_FAIL",
+            },
+        ),
+    )
+
+    assert result["type"] == "abort"
+    assert result["reason"] == "not_konn_panel"
+
+    # Test abort if already configured
+    config_entry = MockConfigEntry(
+        domain=config_flow.DOMAIN,
+        data={config_flow.CONF_HOST: "1.2.3.4", config_flow.CONF_PORT: 1234},
+    )
+    config_entry.add_to_hass(hass)
+
+    result = await hass.config_entries.flow.async_init(
+        config_flow.DOMAIN,
+        context={"source": config_entries.SOURCE_SSDP},
+        data=ssdp.SsdpServiceInfo(
+            ssdp_usn="mock_usn",
+            ssdp_st="mock_st",
+            ssdp_location="http://1.2.3.4:1234/Device.xml",
+            upnp={
+                "manufacturer": config_flow.KONN_MANUFACTURER,
+                "modelName": config_flow.KONN_MODEL,
+            },
+        ),
+    )
+
+    assert result["type"] == "abort"
+    assert result["reason"] == "already_configured"
+
+
+async def test_import_no_host_user_finish(hass: HomeAssistant, mock_panel) -> None:
     """Test importing a panel with no host info."""
     mock_panel.get_status.return_value = {
         "mac": "aa:bb:cc:dd:ee:ff",
@@ -195,7 +296,7 @@ async def test_import_no_host_user_finish(hass, mock_panel):
     assert result["type"] == "create_entry"
 
 
-async def test_import_ssdp_host_user_finish(hass, mock_panel):
+async def test_import_ssdp_host_user_finish(hass: HomeAssistant, mock_panel) -> None:
     """Test importing a pro panel with no host info which ssdp discovers."""
     mock_panel.get_status.return_value = {
         "chipId": "somechipid",
@@ -240,11 +341,15 @@ async def test_import_ssdp_host_user_finish(hass, mock_panel):
     ssdp_result = await hass.config_entries.flow.async_init(
         config_flow.DOMAIN,
         context={"source": config_entries.SOURCE_SSDP},
-        data={
-            "ssdp_location": "http://0.0.0.0:1234/Device.xml",
-            "manufacturer": config_flow.KONN_MANUFACTURER,
-            "modelName": config_flow.KONN_MODEL_PRO,
-        },
+        data=ssdp.SsdpServiceInfo(
+            ssdp_usn="mock_usn",
+            ssdp_st="mock_st",
+            ssdp_location="http://0.0.0.0:1234/Device.xml",
+            upnp={
+                "manufacturer": config_flow.KONN_MANUFACTURER,
+                "modelName": config_flow.KONN_MODEL_PRO,
+            },
+        ),
     )
     assert ssdp_result["type"] == "abort"
     assert ssdp_result["reason"] == "already_in_progress"
@@ -268,7 +373,7 @@ async def test_import_ssdp_host_user_finish(hass, mock_panel):
     assert result["type"] == "create_entry"
 
 
-async def test_ssdp_already_configured(hass, mock_panel):
+async def test_ssdp_already_configured(hass: HomeAssistant, mock_panel) -> None:
     """Test if a discovered panel has already been configured."""
     MockConfigEntry(
         domain="konnected",
@@ -283,17 +388,21 @@ async def test_ssdp_already_configured(hass, mock_panel):
     result = await hass.config_entries.flow.async_init(
         config_flow.DOMAIN,
         context={"source": config_entries.SOURCE_SSDP},
-        data={
-            "ssdp_location": "http://0.0.0.0:1234/Device.xml",
-            "manufacturer": config_flow.KONN_MANUFACTURER,
-            "modelName": config_flow.KONN_MODEL_PRO,
-        },
+        data=ssdp.SsdpServiceInfo(
+            ssdp_usn="mock_usn",
+            ssdp_st="mock_st",
+            ssdp_location="http://0.0.0.0:1234/Device.xml",
+            upnp={
+                "manufacturer": config_flow.KONN_MANUFACTURER,
+                "modelName": config_flow.KONN_MODEL_PRO,
+            },
+        ),
     )
     assert result["type"] == "abort"
     assert result["reason"] == "already_configured"
 
 
-async def test_ssdp_host_update(hass, mock_panel):
+async def test_ssdp_host_update(hass: HomeAssistant, mock_panel) -> None:
     """Test if a discovered panel has already been configured but changed host."""
     device_config = config_flow.CONFIG_ENTRY_SCHEMA(
         {
@@ -359,11 +468,15 @@ async def test_ssdp_host_update(hass, mock_panel):
     result = await hass.config_entries.flow.async_init(
         config_flow.DOMAIN,
         context={"source": config_entries.SOURCE_SSDP},
-        data={
-            "ssdp_location": "http://1.1.1.1:1234/Device.xml",
-            "manufacturer": config_flow.KONN_MANUFACTURER,
-            "modelName": config_flow.KONN_MODEL_PRO,
-        },
+        data=ssdp.SsdpServiceInfo(
+            ssdp_usn="mock_usn",
+            ssdp_st="mock_st",
+            ssdp_location="http://1.1.1.1:1234/Device.xml",
+            upnp={
+                "manufacturer": config_flow.KONN_MANUFACTURER,
+                "modelName": config_flow.KONN_MODEL_PRO,
+            },
+        ),
     )
     assert result["type"] == "abort"
 
@@ -374,7 +487,7 @@ async def test_ssdp_host_update(hass, mock_panel):
     assert entry.data["access_token"] == "11223344556677889900"
 
 
-async def test_import_existing_config(hass, mock_panel):
+async def test_import_existing_config(hass: HomeAssistant, mock_panel) -> None:
     """Test importing a host with an existing config file."""
     mock_panel.get_status.return_value = {
         "mac": "11:22:33:44:55:66",
@@ -493,7 +606,7 @@ async def test_import_existing_config(hass, mock_panel):
     }
 
 
-async def test_import_existing_config_entry(hass, mock_panel):
+async def test_import_existing_config_entry(hass: HomeAssistant, mock_panel) -> None:
     """Test importing a host that has an existing config entry."""
     MockConfigEntry(
         domain="konnected",
@@ -565,7 +678,7 @@ async def test_import_existing_config_entry(hass, mock_panel):
     }
 
 
-async def test_import_pin_config(hass, mock_panel):
+async def test_import_pin_config(hass: HomeAssistant, mock_panel) -> None:
     """Test importing a host with an existing config file that specifies pin configs."""
     mock_panel.get_status.return_value = {
         "mac": "11:22:33:44:55:66",
@@ -662,7 +775,7 @@ async def test_import_pin_config(hass, mock_panel):
     }
 
 
-async def test_option_flow(hass, mock_panel):
+async def test_option_flow(hass: HomeAssistant, mock_panel) -> None:
     """Test config flow options."""
     device_config = config_flow.CONFIG_ENTRY_SCHEMA(
         {
@@ -848,7 +961,7 @@ async def test_option_flow(hass, mock_panel):
     }
 
 
-async def test_option_flow_pro(hass, mock_panel):
+async def test_option_flow_pro(hass: HomeAssistant, mock_panel) -> None:
     """Test config flow options for pro board."""
     device_config = config_flow.CONFIG_ENTRY_SCHEMA(
         {
@@ -1034,7 +1147,7 @@ async def test_option_flow_pro(hass, mock_panel):
     }
 
 
-async def test_option_flow_import(hass, mock_panel):
+async def test_option_flow_import(hass: HomeAssistant, mock_panel) -> None:
     """Test config flow options imported from configuration.yaml."""
     device_options = config_flow.OPTIONS_SCHEMA(
         {
@@ -1186,7 +1299,7 @@ async def test_option_flow_import(hass, mock_panel):
     }
 
 
-async def test_option_flow_existing(hass, mock_panel):
+async def test_option_flow_existing(hass: HomeAssistant, mock_panel) -> None:
     """Test config flow options with existing already in place."""
     device_options = config_flow.OPTIONS_SCHEMA(
         {

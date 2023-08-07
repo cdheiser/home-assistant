@@ -1,5 +1,4 @@
 {
-  "title": "SIA Alarm Systems",
   "config": {
     "step": {
       "user": {
@@ -24,6 +23,9 @@
         },
         "title": "Add another account to the current port."
       }
+    },
+    "abort": {
+      "already_configured": "[%key:common::config_flow::abort::already_configured_device%]"
     },
     "error": {
       "invalid_key_format": "The key is not a hex value, please use only 0-9 and A-F.",

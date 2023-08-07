@@ -72,7 +72,7 @@ INFLUX_CONF_ORG = "org"
 EVENT_NEW_STATE = "new_state"
 DOMAIN = "influxdb"
 API_VERSION_2 = "2"
-TIMEOUT = 5
+TIMEOUT = 10  # seconds
 RETRY_DELAY = 20
 QUEUE_BACKLOG_SECONDS = 30
 RETRY_INTERVAL = 60  # seconds
@@ -84,7 +84,7 @@ TEST_QUERY_V1 = "SHOW DATABASES;"
 TEST_QUERY_V2 = "buckets()"
 CODE_INVALID_INPUTS = 400
 
-MIN_TIME_BETWEEN_UPDATES = timedelta(seconds=60)
+MIN_TIME_BETWEEN_UPDATES = timedelta(seconds=10)
 
 RE_DIGIT_TAIL = re.compile(r"^[^\.]*\d+\.?\d+[^\.]*$")
 RE_DECIMAL = re.compile(r"[^\d.]+")

@@ -3,12 +3,15 @@ import logging
 from unittest.mock import Mock, patch
 
 from homeassistant.config import YAML_CONFIG_FILE
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers.check_config import (
     CheckConfigError,
     async_check_ha_config_file,
 )
+import homeassistant.helpers.config_validation as cv
+from homeassistant.requirements import RequirementsNotFound
 
-from tests.common import mock_platform, patch_yaml_files
+from tests.common import MockModule, mock_integration, mock_platform, patch_yaml_files
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -37,7 +40,7 @@ def log_ha_config(conf):
         _LOGGER.debug("error[%s] = %s", cnt, err)
 
 
-async def test_bad_core_config(hass):
+async def test_bad_core_config(hass: HomeAssistant) -> None:
     """Test a bad core config setup."""
     files = {YAML_CONFIG_FILE: BAD_CORE_CONFIG}
     with patch("os.path.isfile", return_value=True), patch_yaml_files(files):
@@ -53,7 +56,7 @@ async def test_bad_core_config(hass):
         assert not res.errors
 
 
-async def test_config_platform_valid(hass):
+async def test_config_platform_valid(hass: HomeAssistant) -> None:
     """Test a valid platform setup."""
     files = {YAML_CONFIG_FILE: BASE_CONFIG + "light:\n  platform: demo"}
     with patch("os.path.isfile", return_value=True), patch_yaml_files(files):
@@ -65,7 +68,7 @@ async def test_config_platform_valid(hass):
         assert not res.errors
 
 
-async def test_component_platform_not_found(hass):
+async def test_component_platform_not_found(hass: HomeAssistant) -> None:
     """Test errors if component or platform not found."""
     # Make sure they don't exist
     files = {YAML_CONFIG_FILE: BASE_CONFIG + "beer:"}
@@ -75,7 +78,7 @@ async def test_component_platform_not_found(hass):
 
         assert res.keys() == {"homeassistant"}
         assert res.errors[0] == CheckConfigError(
-            "Component error: beer - Integration 'beer' not found.", None, None
+            "Integration error: beer - Integration 'beer' not found.", None, None
         )
 
         # Only 1 error expected
@@ -83,7 +86,46 @@ async def test_component_platform_not_found(hass):
         assert not res.errors
 
 
-async def test_component_platform_not_found_2(hass):
+async def test_component_requirement_not_found(hass: HomeAssistant) -> None:
+    """Test errors if component with a requirement not found not found."""
+    # Make sure they don't exist
+    files = {YAML_CONFIG_FILE: BASE_CONFIG + "test_custom_component:"}
+    with patch(
+        "homeassistant.helpers.check_config.async_get_integration_with_requirements",
+        side_effect=RequirementsNotFound("test_custom_component", ["any"]),
+    ), patch("os.path.isfile", return_value=True), patch_yaml_files(files):
+        res = await async_check_ha_config_file(hass)
+        log_ha_config(res)
+
+        assert res.keys() == {"homeassistant"}
+        assert res.errors[0] == CheckConfigError(
+            (
+                "Integration error: test_custom_component - Requirements for"
+                " test_custom_component not found: ['any']."
+            ),
+            None,
+            None,
+        )
+
+        # Only 1 error expected
+        res.errors.pop(0)
+        assert not res.errors
+
+
+async def test_component_not_found_safe_mode(hass: HomeAssistant) -> None:
+    """Test no errors if component not found in safe mode."""
+    # Make sure they don't exist
+    files = {YAML_CONFIG_FILE: BASE_CONFIG + "beer:"}
+    hass.config.safe_mode = True
+    with patch("os.path.isfile", return_value=True), patch_yaml_files(files):
+        res = await async_check_ha_config_file(hass)
+        log_ha_config(res)
+
+        assert res.keys() == {"homeassistant"}
+        assert not res.errors
+
+
+async def test_component_platform_not_found_2(hass: HomeAssistant) -> None:
     """Test errors if component or platform not found."""
     # Make sure they don't exist
     files = {YAML_CONFIG_FILE: BASE_CONFIG + "light:\n  platform: beer"}
@@ -103,11 +145,24 @@ async def test_component_platform_not_found_2(hass):
         assert not res.errors
 
 
-async def test_package_invalid(hass):
+async def test_platform_not_found_safe_mode(hass: HomeAssistant) -> None:
+    """Test no errors if platform not found in safe_mode."""
+    # Make sure they don't exist
+    files = {YAML_CONFIG_FILE: BASE_CONFIG + "light:\n  platform: beer"}
+    hass.config.safe_mode = True
+    with patch("os.path.isfile", return_value=True), patch_yaml_files(files):
+        res = await async_check_ha_config_file(hass)
+        log_ha_config(res)
+
+        assert res.keys() == {"homeassistant", "light"}
+        assert res["light"] == []
+
+        assert not res.errors
+
+
+async def test_package_invalid(hass: HomeAssistant) -> None:
     """Test a valid platform setup."""
-    files = {
-        YAML_CONFIG_FILE: BASE_CONFIG + ("  packages:\n    p1:\n" '      group: ["a"]')
-    }
+    files = {YAML_CONFIG_FILE: BASE_CONFIG + '  packages:\n    p1:\n      group: ["a"]'}
     with patch("os.path.isfile", return_value=True), patch_yaml_files(files):
         res = await async_check_ha_config_file(hass)
         log_ha_config(res)
@@ -121,7 +176,7 @@ async def test_package_invalid(hass):
         assert res.keys() == {"homeassistant"}
 
 
-async def test_bootstrap_error(hass):
+async def test_bootstrap_error(hass: HomeAssistant) -> None:
     """Test a valid platform setup."""
     files = {YAML_CONFIG_FILE: BASE_CONFIG + "automation: !include no.yaml"}
     with patch("os.path.isfile", return_value=True), patch_yaml_files(files):
@@ -135,7 +190,7 @@ async def test_bootstrap_error(hass):
         assert not res.errors
 
 
-async def test_automation_config_platform(hass):
+async def test_automation_config_platform(hass: HomeAssistant) -> None:
     """Test automation async config."""
     files = {
         YAML_CONFIG_FILE: BASE_CONFIG
@@ -171,7 +226,7 @@ action:
         assert "input_datetime" in res
 
 
-async def test_config_platform_raise(hass):
+async def test_config_platform_raise(hass: HomeAssistant) -> None:
     """Test bad config validation platform."""
     mock_platform(
         hass,
@@ -192,3 +247,20 @@ bla:
         assert err.domain == "bla"
         assert err.message == "Unexpected error calling config validator: Broken"
         assert err.config == {"value": 1}
+
+
+async def test_removed_yaml_support(hass: HomeAssistant) -> None:
+    """Test config validation check with removed CONFIG_SCHEMA without raise if present."""
+    mock_integration(
+        hass,
+        MockModule(
+            domain="bla", config_schema=cv.removed("bla", raise_if_present=False)
+        ),
+        False,
+    )
+    files = {YAML_CONFIG_FILE: BASE_CONFIG + "bla:\n  platform: demo"}
+    with patch("os.path.isfile", return_value=True), patch_yaml_files(files):
+        res = await async_check_ha_config_file(hass)
+        log_ha_config(res)
+
+        assert res.keys() == {"homeassistant"}

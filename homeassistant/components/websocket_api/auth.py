@@ -11,7 +11,8 @@ from voluptuous.humanize import humanize_error
 from homeassistant.auth.models import RefreshToken, User
 from homeassistant.components.http.ban import process_success_login, process_wrong_login
 from homeassistant.const import __version__
-from homeassistant.core import HomeAssistant
+from homeassistant.core import CALLBACK_TYPE, HomeAssistant
+from homeassistant.util.json import JsonValueType
 
 from .connection import ActiveConnection
 from .error import Disconnect
@@ -57,18 +58,20 @@ class AuthPhase:
         logger: WebSocketAdapter,
         hass: HomeAssistant,
         send_message: Callable[[str | dict[str, Any]], None],
+        cancel_ws: CALLBACK_TYPE,
         request: Request,
     ) -> None:
         """Initialize the authentiated connection."""
         self._hass = hass
         self._send_message = send_message
+        self._cancel_ws = cancel_ws
         self._logger = logger
         self._request = request
 
-    async def async_handle(self, msg: dict[str, str]) -> ActiveConnection:
+    async def async_handle(self, msg: JsonValueType) -> ActiveConnection:
         """Handle authentication."""
         try:
-            msg = AUTH_MESSAGE_SCHEMA(msg)
+            valid_msg = AUTH_MESSAGE_SCHEMA(msg)
         except vol.Invalid as err:
             error_msg = (
                 f"Auth message incorrectly formatted: {humanize_error(msg, err)}"
@@ -77,13 +80,19 @@ class AuthPhase:
             self._send_message(auth_invalid_message(error_msg))
             raise Disconnect from err
 
-        if "access_token" in msg:
-            self._logger.debug("Received access_token")
-            refresh_token = await self._hass.auth.async_validate_access_token(
-                msg["access_token"]
+        if (access_token := valid_msg.get("access_token")) and (
+            refresh_token := await self._hass.auth.async_validate_access_token(
+                access_token
             )
-            if refresh_token is not None:
-                return await self._async_finish_auth(refresh_token.user, refresh_token)
+        ):
+            conn = await self._async_finish_auth(refresh_token.user, refresh_token)
+            conn.subscriptions[
+                "auth"
+            ] = self._hass.auth.async_register_revoke_token_callback(
+                refresh_token.id, self._cancel_ws
+            )
+
+            return conn
 
         self._send_message(auth_invalid_message("Invalid access token or password"))
         await process_wrong_login(self._request)

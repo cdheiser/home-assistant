@@ -1,6 +1,7 @@
 """Support for Alexa skill service end point."""
 import enum
 import logging
+from typing import Any
 
 from homeassistant.components import http
 from homeassistant.core import callback
@@ -12,7 +13,7 @@ from .const import DOMAIN, SYN_RESOLUTION_MATCH
 
 _LOGGER = logging.getLogger(__name__)
 
-HANDLERS = Registry()
+HANDLERS = Registry()  # type: ignore[var-annotated]
 
 INTENTS_API_ENDPOINT = "/api/alexa"
 
@@ -41,8 +42,7 @@ def async_setup(hass):
 
 
 async def async_setup_intents(hass):
-    """
-    Do intents setup.
+    """Do intents setup.
 
     Right now this module does not expose any, but the intent component breaks
     without it.
@@ -120,20 +120,13 @@ async def async_handle_message(hass, message):
     req = message.get("request")
     req_type = req["type"]
 
-    handler = HANDLERS.get(req_type)
-
-    if not handler:
+    if not (handler := HANDLERS.get(req_type)):
         raise UnknownRequest(f"Received unknown request {req_type}")
 
     return await handler(hass, message)
 
 
 @HANDLERS.register("SessionEndedRequest")
-async def async_handle_session_end(hass, message):
-    """Handle a session end request."""
-    return None
-
-
 @HANDLERS.register("IntentRequest")
 @HANDLERS.register("LaunchRequest")
 async def async_handle_intent(hass, message):
@@ -153,6 +146,11 @@ async def async_handle_intent(hass, message):
         intent_name = (
             message.get("session", {}).get("application", {}).get("applicationId")
         )
+    elif req["type"] == "SessionEndedRequest":
+        app_id = message.get("session", {}).get("application", {}).get("applicationId")
+        intent_name = f"{app_id}.{req['type']}"
+        alexa_response.variables["reason"] = req["reason"]
+        alexa_response.variables["error"] = req.get("error")
     else:
         intent_name = alexa_intent_info["name"]
 
@@ -168,7 +166,10 @@ async def async_handle_intent(hass, message):
             alexa_response.add_speech(
                 alexa_speech, intent_response.speech[intent_speech]["speech"]
             )
-            break
+        if intent_speech in intent_response.reprompt:
+            alexa_response.add_reprompt(
+                alexa_speech, intent_response.reprompt[intent_speech]["reprompt"]
+            )
 
     if "simple" in intent_response.card:
         alexa_response.add_card(
@@ -180,19 +181,21 @@ async def async_handle_intent(hass, message):
     return alexa_response.as_dict()
 
 
-def resolve_slot_synonyms(key, request):
+def resolve_slot_data(key: str, request: dict[str, Any]) -> dict[str, str]:
     """Check slot request for synonym resolutions."""
-    # Default to the spoken slot value if more than one or none are found. For
+    # Default to the spoken slot value if more than one or none are found. Always
+    # passes the id and name of the nearest possible slot resolution. For
     # reference to the request object structure, see the Alexa docs:
     # https://tinyurl.com/ybvm7jhs
-    resolved_value = request["value"]
+    resolved_data = {}
+    resolved_data["value"] = request["value"]
+    resolved_data["id"] = ""
 
     if (
         "resolutions" in request
         and "resolutionsPerAuthority" in request["resolutions"]
         and len(request["resolutions"]["resolutionsPerAuthority"]) >= 1
     ):
-
         # Extract all of the possible values from each authority with a
         # successful match
         possible_values = []
@@ -201,20 +204,26 @@ def resolve_slot_synonyms(key, request):
             if entry["status"]["code"] != SYN_RESOLUTION_MATCH:
                 continue
 
-            possible_values.extend([item["value"]["name"] for item in entry["values"]])
+            possible_values.extend([item["value"] for item in entry["values"]])
+
+        # Always set id if available, otherwise an empty string is used as id
+        if len(possible_values) >= 1:
+            # Set ID if available
+            if "id" in possible_values[0]:
+                resolved_data["id"] = possible_values[0]["id"]
 
         # If there is only one match use the resolved value, otherwise the
-        # resolution cannot be determined, so use the spoken slot value
+        # resolution cannot be determined, so use the spoken slot value and empty string as id
         if len(possible_values) == 1:
-            resolved_value = possible_values[0]
+            resolved_data["value"] = possible_values[0]["name"]
         else:
             _LOGGER.debug(
                 "Found multiple synonym resolutions for slot value: {%s: %s}",
                 key,
-                resolved_value,
+                resolved_data["value"],
             )
 
-    return resolved_value
+    return resolved_data
 
 
 class AlexaResponse:
@@ -238,8 +247,10 @@ class AlexaResponse:
                     continue
 
                 _key = key.replace(".", "_")
+                _slot_data = resolve_slot_data(key, value)
 
-                self.variables[_key] = resolve_slot_synonyms(key, value)
+                self.variables[_key] = _slot_data["value"]
+                self.variables[_key + "_Id"] = _slot_data["id"]
 
     def add_card(self, card_type, title, content):
         """Add a card to the response."""
@@ -269,10 +280,9 @@ class AlexaResponse:
 
         key = "ssml" if speech_type == SpeechType.ssml else "text"
 
-        self.reprompt = {
-            "type": speech_type.value,
-            key: text.async_render(self.variables, parse_result=False),
-        }
+        self.should_end_session = False
+
+        self.reprompt = {"type": speech_type.value, key: text}
 
     def as_dict(self):
         """Return response in an Alexa valid dict."""

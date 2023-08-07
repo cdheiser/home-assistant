@@ -1,45 +1,52 @@
 """Volume conversion util functions."""
-from numbers import Number
+from __future__ import annotations
 
-from homeassistant.const import (
+# pylint: disable-next=unused-import,hass-deprecated-import
+from homeassistant.const import (  # noqa: F401
     UNIT_NOT_RECOGNIZED_TEMPLATE,
     VOLUME,
+    VOLUME_CUBIC_FEET,
+    VOLUME_CUBIC_METERS,
     VOLUME_FLUID_OUNCE,
     VOLUME_GALLONS,
     VOLUME_LITERS,
     VOLUME_MILLILITERS,
 )
+from homeassistant.helpers.frame import report
 
-VALID_UNITS = [VOLUME_LITERS, VOLUME_MILLILITERS, VOLUME_GALLONS, VOLUME_FLUID_OUNCE]
+from .unit_conversion import VolumeConverter
+
+VALID_UNITS = VolumeConverter.VALID_UNITS
 
 
-def __liter_to_gallon(liter: float) -> float:
+def liter_to_gallon(liter: float) -> float:
     """Convert a volume measurement in Liter to Gallon."""
-    return liter * 0.2642
+    return convert(liter, VOLUME_LITERS, VOLUME_GALLONS)
 
 
-def __gallon_to_liter(gallon: float) -> float:
+def gallon_to_liter(gallon: float) -> float:
     """Convert a volume measurement in Gallon to Liter."""
-    return gallon * 3.785
+    return convert(gallon, VOLUME_GALLONS, VOLUME_LITERS)
+
+
+def cubic_meter_to_cubic_feet(cubic_meter: float) -> float:
+    """Convert a volume measurement in cubic meter to cubic feet."""
+    return convert(cubic_meter, VOLUME_CUBIC_METERS, VOLUME_CUBIC_FEET)
+
+
+def cubic_feet_to_cubic_meter(cubic_feet: float) -> float:
+    """Convert a volume measurement in cubic feet to cubic meter."""
+    return convert(cubic_feet, VOLUME_CUBIC_FEET, VOLUME_CUBIC_METERS)
 
 
 def convert(volume: float, from_unit: str, to_unit: str) -> float:
-    """Convert a temperature from one unit to another."""
-    if from_unit not in VALID_UNITS:
-        raise ValueError(UNIT_NOT_RECOGNIZED_TEMPLATE.format(from_unit, VOLUME))
-    if to_unit not in VALID_UNITS:
-        raise ValueError(UNIT_NOT_RECOGNIZED_TEMPLATE.format(to_unit, VOLUME))
-
-    if not isinstance(volume, Number):
-        raise TypeError(f"{volume} is not of numeric type")
-
-    if from_unit == to_unit:
-        return volume
-
-    result: float = volume
-    if from_unit == VOLUME_LITERS and to_unit == VOLUME_GALLONS:
-        result = __liter_to_gallon(volume)
-    elif from_unit == VOLUME_GALLONS and to_unit == VOLUME_LITERS:
-        result = __gallon_to_liter(volume)
-
-    return result
+    """Convert a volume from one unit to another."""
+    report(
+        (
+            "uses volume utility. This is deprecated since 2022.10 and will "
+            "stop working in Home Assistant 2023.4, it should be updated to use "
+            "unit_conversion.VolumeConverter instead"
+        ),
+        error_if_core=False,
+    )
+    return VolumeConverter.convert(volume, from_unit, to_unit)

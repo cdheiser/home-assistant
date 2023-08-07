@@ -17,7 +17,7 @@ from homeassistant.components.light import (
     ATTR_RGBW_COLOR,
     ATTR_RGBWW_COLOR,
     ATTR_TRANSITION,
-    ATTR_WHITE_VALUE,
+    ATTR_WHITE,
     ATTR_XY_COLOR,
     DOMAIN,
 )
@@ -45,11 +45,11 @@ def turn_on(
     hs_color=None,
     color_temp=None,
     kelvin=None,
-    white_value=None,
     profile=None,
     flash=None,
     effect=None,
     color_name=None,
+    white=None,
 ):
     """Turn all or specified light on."""
     hass.add_job(
@@ -66,11 +66,11 @@ def turn_on(
         hs_color,
         color_temp,
         kelvin,
-        white_value,
         profile,
         flash,
         effect,
         color_name,
+        white,
     )
 
 
@@ -87,11 +87,11 @@ async def async_turn_on(
     hs_color=None,
     color_temp=None,
     kelvin=None,
-    white_value=None,
     profile=None,
     flash=None,
     effect=None,
     color_name=None,
+    white=None,
 ):
     """Turn all or specified light on."""
     data = {
@@ -109,10 +109,10 @@ async def async_turn_on(
             (ATTR_HS_COLOR, hs_color),
             (ATTR_COLOR_TEMP, color_temp),
             (ATTR_KELVIN, kelvin),
-            (ATTR_WHITE_VALUE, white_value),
             (ATTR_FLASH, flash),
             (ATTR_EFFECT, effect),
             (ATTR_COLOR_NAME, color_name),
+            (ATTR_WHITE, white),
         ]
         if value is not None
     }
@@ -153,7 +153,6 @@ def toggle(
     hs_color=None,
     color_temp=None,
     kelvin=None,
-    white_value=None,
     profile=None,
     flash=None,
     effect=None,
@@ -172,7 +171,6 @@ def toggle(
         hs_color,
         color_temp,
         kelvin,
-        white_value,
         profile,
         flash,
         effect,
@@ -191,7 +189,6 @@ async def async_toggle(
     hs_color=None,
     color_temp=None,
     kelvin=None,
-    white_value=None,
     profile=None,
     flash=None,
     effect=None,
@@ -211,7 +208,6 @@ async def async_toggle(
             (ATTR_HS_COLOR, hs_color),
             (ATTR_COLOR_TEMP, color_temp),
             (ATTR_KELVIN, kelvin),
-            (ATTR_WHITE_VALUE, white_value),
             (ATTR_FLASH, flash),
             (ATTR_EFFECT, effect),
             (ATTR_COLOR_NAME, color_name),

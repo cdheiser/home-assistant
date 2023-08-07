@@ -1,4 +1,6 @@
 """Base class for iRobot devices."""
+from __future__ import annotations
+
 import asyncio
 import logging
 
@@ -7,22 +9,15 @@ from homeassistant.components.vacuum import (
     STATE_CLEANING,
     STATE_DOCKED,
     STATE_ERROR,
-    STATE_IDLE,
-    STATE_PAUSED,
     STATE_RETURNING,
-    SUPPORT_BATTERY,
-    SUPPORT_LOCATE,
-    SUPPORT_PAUSE,
-    SUPPORT_RETURN_HOME,
-    SUPPORT_SEND_COMMAND,
-    SUPPORT_START,
-    SUPPORT_STATE,
-    SUPPORT_STATUS,
-    SUPPORT_STOP,
     StateVacuumEntity,
+    VacuumEntityFeature,
 )
+from homeassistant.const import STATE_IDLE, STATE_PAUSED
 import homeassistant.helpers.device_registry as dr
-from homeassistant.helpers.entity import Entity
+from homeassistant.helpers.entity import DeviceInfo, Entity
+import homeassistant.util.dt as dt_util
+from homeassistant.util.unit_system import METRIC_SYSTEM
 
 from . import roomba_reported_state
 from .const import DOMAIN
@@ -38,15 +33,14 @@ ATTR_SOFTWARE_VERSION = "software_version"
 
 # Commonly supported features
 SUPPORT_IROBOT = (
-    SUPPORT_BATTERY
-    | SUPPORT_PAUSE
-    | SUPPORT_RETURN_HOME
-    | SUPPORT_SEND_COMMAND
-    | SUPPORT_START
-    | SUPPORT_STATE
-    | SUPPORT_STATUS
-    | SUPPORT_STOP
-    | SUPPORT_LOCATE
+    VacuumEntityFeature.BATTERY
+    | VacuumEntityFeature.PAUSE
+    | VacuumEntityFeature.RETURN_HOME
+    | VacuumEntityFeature.SEND_COMMAND
+    | VacuumEntityFeature.START
+    | VacuumEntityFeature.STATE
+    | VacuumEntityFeature.STOP
+    | VacuumEntityFeature.LOCATE
 )
 
 STATE_MAP = {
@@ -66,6 +60,9 @@ STATE_MAP = {
 class IRobotEntity(Entity):
     """Base class for iRobot Entities."""
 
+    _attr_should_poll = False
+    _attr_has_entity_name = True
+
     def __init__(self, roomba, blid):
         """Initialize the iRobot handler."""
         self.vacuum = roomba
@@ -74,11 +71,6 @@ class IRobotEntity(Entity):
         self._name = self.vacuum_state.get("name")
         self._version = self.vacuum_state.get("softwareVer")
         self._sku = self.vacuum_state.get("sku")
-
-    @property
-    def should_poll(self):
-        """Disable polling."""
-        return False
 
     @property
     def robot_unique_id(self):
@@ -93,18 +85,19 @@ class IRobotEntity(Entity):
     @property
     def device_info(self):
         """Return the device info of the vacuum cleaner."""
-        info = {
-            "identifiers": {(DOMAIN, self.robot_unique_id)},
-            "manufacturer": "iRobot",
-            "name": str(self._name),
-            "sw_version": self._version,
-            "model": self._sku,
-        }
+        connections = None
         if mac_address := self.vacuum_state.get("hwPartsRev", {}).get(
             "wlan0HwAddr", self.vacuum_state.get("mac")
         ):
-            info["connections"] = {(dr.CONNECTION_NETWORK_MAC, mac_address)}
-        return info
+            connections = {(dr.CONNECTION_NETWORK_MAC, mac_address)}
+        return DeviceInfo(
+            connections=connections,
+            identifiers={(DOMAIN, self.robot_unique_id)},
+            manufacturer="iRobot",
+            model=self._sku,
+            name=str(self._name),
+            sw_version=self._version,
+        )
 
     @property
     def _battery_level(self):
@@ -129,7 +122,7 @@ class IRobotEntity(Entity):
         """Register callback function."""
         self.vacuum.register_on_message_callback(self.on_message)
 
-    def new_state_filter(self, new_state):  # pylint: disable=no-self-use
+    def new_state_filter(self, new_state):
         """Filter out wifi state messages."""
         return len(new_state) > 1 or "signal" not in new_state
 
@@ -142,6 +135,8 @@ class IRobotEntity(Entity):
 
 class IRobotVacuum(IRobotEntity, StateVacuumEntity):
     """Base class for iRobot robots."""
+
+    _attr_name = None
 
     def __init__(self, roomba, blid):
         """Initialize the iRobot handler."""
@@ -169,11 +164,6 @@ class IRobotVacuum(IRobotEntity, StateVacuumEntity):
         return True  # Always available, otherwise setup will fail
 
     @property
-    def name(self):
-        """Return the name of the device."""
-        return self._name
-
-    @property
     def extra_state_attributes(self):
         """Return the state attributes of the device."""
         state = self.vacuum_state
@@ -191,14 +181,10 @@ class IRobotVacuum(IRobotEntity, StateVacuumEntity):
         # currently on
         if self.state == STATE_CLEANING:
             # Get clean mission status
-            mission_state = state.get("cleanMissionStatus", {})
-            cleaning_time = mission_state.get("mssnM")
-            cleaned_area = mission_state.get("sqft")  # Imperial
-            # Convert to m2 if the unit_system is set to metric
-            if cleaned_area and self.hass.config.units.is_metric:
-                cleaned_area = round(cleaned_area * 0.0929)
-            state_attrs[ATTR_CLEANING_TIME] = cleaning_time
-            state_attrs[ATTR_CLEANED_AREA] = cleaned_area
+            (
+                state_attrs[ATTR_CLEANING_TIME],
+                state_attrs[ATTR_CLEANED_AREA],
+            ) = self.get_cleaning_status(state)
 
         # Error
         if self.vacuum.error_code != 0:
@@ -213,11 +199,30 @@ class IRobotVacuum(IRobotEntity, StateVacuumEntity):
             pos_x = pos_state.get("point", {}).get("x")
             pos_y = pos_state.get("point", {}).get("y")
             theta = pos_state.get("theta")
-            if all(item is not None for item in [pos_x, pos_y, theta]):
+            if all(item is not None for item in (pos_x, pos_y, theta)):
                 position = f"({pos_x}, {pos_y}, {theta})"
             state_attrs[ATTR_POSITION] = position
 
         return state_attrs
+
+    def get_cleaning_status(self, state) -> tuple[int, int]:
+        """Return the cleaning time and cleaned area from the device."""
+        if not (mission_state := state.get("cleanMissionStatus")):
+            return (0, 0)
+
+        if cleaning_time := mission_state.get("mssnM", 0):
+            pass
+        elif start_time := mission_state.get("mssnStrtTm"):
+            now = dt_util.as_timestamp(dt_util.utcnow())
+            if now > start_time:
+                cleaning_time = (now - start_time) // 60
+
+        if cleaned_area := mission_state.get("sqft", 0):  # Imperial
+            # Convert to m2 if the unit_system is set to metric
+            if self.hass.config.units is METRIC_SYSTEM:
+                cleaned_area = round(cleaned_area * 0.0929)
+
+        return (cleaning_time, cleaned_area)
 
     def on_message(self, json_data):
         """Update state on message change."""

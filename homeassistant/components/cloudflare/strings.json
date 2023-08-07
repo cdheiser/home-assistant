@@ -18,7 +18,13 @@
       "records": {
         "title": "Choose the Records to Update",
         "data": {
-           "records": "Records"
+          "records": "Records"
+        }
+      },
+      "reauth_confirm": {
+        "data": {
+          "description": "Re-authenticate with your Cloudflare account.",
+          "api_token": "[%key:common::config_flow::data::api_token%]"
         }
       }
     },
@@ -28,8 +34,15 @@
       "invalid_zone": "Invalid zone"
     },
     "abort": {
+      "reauth_successful": "[%key:common::config_flow::abort::reauth_successful%]",
       "single_instance_allowed": "[%key:common::config_flow::abort::single_instance_allowed%]",
       "unknown": "[%key:common::config_flow::error::unknown%]"
+    }
+  },
+  "services": {
+    "update_records": {
+      "name": "Update records",
+      "description": "Manually trigger update to Cloudflare records."
     }
   }
 }

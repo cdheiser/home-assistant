@@ -2,14 +2,15 @@
 import voluptuous as vol
 
 from homeassistant.const import CONF_EVENT, CONF_PLATFORM, EVENT_HOMEASSISTANT_STOP
-from homeassistant.core import HassJob, callback
-
-# mypy: allow-untyped-defs
+from homeassistant.core import CALLBACK_TYPE, HassJob, HomeAssistant, callback
+from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.trigger import TriggerActionType, TriggerInfo
+from homeassistant.helpers.typing import ConfigType
 
 EVENT_START = "start"
 EVENT_SHUTDOWN = "shutdown"
 
-TRIGGER_SCHEMA = vol.Schema(
+TRIGGER_SCHEMA = cv.TRIGGER_BASE_SCHEMA.extend(
     {
         vol.Required(CONF_PLATFORM): "homeassistant",
         vol.Required(CONF_EVENT): vol.Any(EVENT_START, EVENT_SHUTDOWN),
@@ -17,11 +18,16 @@ TRIGGER_SCHEMA = vol.Schema(
 )
 
 
-async def async_attach_trigger(hass, config, action, automation_info):
+async def async_attach_trigger(
+    hass: HomeAssistant,
+    config: ConfigType,
+    action: TriggerActionType,
+    trigger_info: TriggerInfo,
+) -> CALLBACK_TYPE:
     """Listen for events based on configuration."""
-    trigger_id = automation_info.get("trigger_id") if automation_info else None
+    trigger_data = trigger_info["trigger_data"]
     event = config.get(CONF_EVENT)
-    job = HassJob(action)
+    job = HassJob(action, f"homeassistant trigger {trigger_info}")
 
     if event == EVENT_SHUTDOWN:
 
@@ -32,10 +38,10 @@ async def async_attach_trigger(hass, config, action, automation_info):
                 job,
                 {
                     "trigger": {
+                        **trigger_data,
                         "platform": "homeassistant",
                         "event": event,
                         "description": "Home Assistant stopping",
-                        "id": trigger_id,
                     }
                 },
                 event.context,
@@ -45,15 +51,15 @@ async def async_attach_trigger(hass, config, action, automation_info):
 
     # Automation are enabled while hass is starting up, fire right away
     # Check state because a config reload shouldn't trigger it.
-    if automation_info["home_assistant_start"]:
+    if trigger_info["home_assistant_start"]:
         hass.async_run_hass_job(
             job,
             {
                 "trigger": {
+                    **trigger_data,
                     "platform": "homeassistant",
                     "event": event,
                     "description": "Home Assistant starting",
-                    "id": trigger_id,
                 }
             },
         )

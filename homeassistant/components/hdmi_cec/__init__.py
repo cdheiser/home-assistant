@@ -1,8 +1,10 @@
 """Support for HDMI CEC."""
-from collections import defaultdict
-from functools import partial, reduce
+from __future__ import annotations
+
+from functools import reduce
 import logging
 import multiprocessing
+from typing import Any
 
 from pycec.cec import CecAdapter
 from pycec.commands import CecCommand, KeyPressCommand, KeyReleaseCommand
@@ -15,11 +17,6 @@ from pycec.const import (
     KEY_MUTE_TOGGLE,
     KEY_VOLUME_DOWN,
     KEY_VOLUME_UP,
-    POWER_OFF,
-    POWER_ON,
-    STATUS_PLAY,
-    STATUS_STILL,
-    STATUS_STOP,
 )
 from pycec.network import HDMINetwork, PhysicalAddress
 from pycec.tcp import TcpAdapter
@@ -33,17 +30,12 @@ from homeassistant.const import (
     CONF_PLATFORM,
     EVENT_HOMEASSISTANT_START,
     EVENT_HOMEASSISTANT_STOP,
-    STATE_IDLE,
-    STATE_OFF,
-    STATE_ON,
-    STATE_PAUSED,
-    STATE_PLAYING,
-    STATE_UNAVAILABLE,
 )
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HassJob, HomeAssistant, ServiceCall, callback
 from homeassistant.helpers import discovery, event
 import homeassistant.helpers.config_validation as cv
 from homeassistant.helpers.entity import Entity
+from homeassistant.helpers.typing import ConfigType
 
 DOMAIN = "hdmi_cec"
 
@@ -65,8 +57,6 @@ ICONS_BY_TYPE = {
     4: ICON_PLAYER,
     5: ICON_AUDIO,
 }
-
-CEC_DEVICES = defaultdict(list)
 
 CMD_UP = "up"
 CMD_DOWN = "down"
@@ -134,7 +124,7 @@ SERVICE_POWER_ON = "power_on"
 SERVICE_STANDBY = "standby"
 
 # pylint: disable=unnecessary-lambda
-DEVICE_SCHEMA = vol.Schema(
+DEVICE_SCHEMA: vol.Schema = vol.Schema(
     {
         vol.All(cv.positive_int): vol.Any(
             lambda devices: DEVICE_SCHEMA(devices), cv.string
@@ -187,8 +177,10 @@ def parse_mapping(mapping, parents=None):
                 yield (val, pad_physical_address(cur))
 
 
-def setup(hass: HomeAssistant, base_config):  # noqa: C901
+def setup(hass: HomeAssistant, base_config: ConfigType) -> bool:  # noqa: C901
     """Set up the CEC capability."""
+
+    hass.data[DOMAIN] = {}
 
     # Parse configuration into a dict of device name to physical address
     # represented as a list of four elements.
@@ -216,17 +208,22 @@ def setup(hass: HomeAssistant, base_config):  # noqa: C901
 
     def _adapter_watchdog(now=None):
         _LOGGER.debug("Reached _adapter_watchdog")
-        event.async_call_later(hass, WATCHDOG_INTERVAL, _adapter_watchdog)
+        event.call_later(hass, WATCHDOG_INTERVAL, _adapter_watchdog_job)
         if not adapter.initialized:
             _LOGGER.info("Adapter not initialized; Trying to restart")
             hass.bus.fire(EVENT_HDMI_CEC_UNAVAILABLE)
             adapter.init()
 
-    hdmi_network.set_initialized_callback(
-        partial(event.async_call_later, hass, WATCHDOG_INTERVAL, _adapter_watchdog)
-    )
+    _adapter_watchdog_job = HassJob(_adapter_watchdog, cancel_on_shutdown=True)
 
-    def _volume(call):
+    @callback
+    def _async_initialized_callback(*_: Any):
+        """Add watchdog on initialization."""
+        return event.async_call_later(hass, WATCHDOG_INTERVAL, _adapter_watchdog_job)
+
+    hdmi_network.set_initialized_callback(_async_initialized_callback)
+
+    def _volume(call: ServiceCall) -> None:
         """Increase/decrease volume and mute/unmute system."""
         mute_key_mapping = {
             ATTR_TOGGLE: KEY_MUTE_TOGGLE,
@@ -260,25 +257,19 @@ def setup(hass: HomeAssistant, base_config):  # noqa: C901
                 hdmi_network.send_command(KeyPressCommand(cmd, dst=ADDR_AUDIOSYSTEM))
                 hdmi_network.send_command(KeyReleaseCommand(dst=ADDR_AUDIOSYSTEM))
 
-    def _tx(call):
+    def _tx(call: ServiceCall) -> None:
         """Send CEC command."""
         data = call.data
         if ATTR_RAW in data:
             command = CecCommand(data[ATTR_RAW])
         else:
-            if ATTR_SRC in data:
-                src = data[ATTR_SRC]
-            else:
-                src = ADDR_UNREGISTERED
-            if ATTR_DST in data:
-                dst = data[ATTR_DST]
-            else:
-                dst = ADDR_BROADCAST
+            src = data.get(ATTR_SRC, ADDR_UNREGISTERED)
+            dst = data.get(ATTR_DST, ADDR_BROADCAST)
             if ATTR_CMD in data:
                 cmd = data[ATTR_CMD]
             else:
                 _LOGGER.error("Attribute 'cmd' is missing")
-                return False
+                return
             if ATTR_ATT in data:
                 if isinstance(data[ATTR_ATT], (list,)):
                     att = data[ATTR_ATT]
@@ -289,16 +280,15 @@ def setup(hass: HomeAssistant, base_config):  # noqa: C901
             command = CecCommand(cmd, dst, src, att)
         hdmi_network.send_command(command)
 
-    def _standby(call):
+    def _standby(call: ServiceCall) -> None:
         hdmi_network.standby()
 
-    def _power_on(call):
+    def _power_on(call: ServiceCall) -> None:
         hdmi_network.power_on()
 
-    def _select_device(call):
+    def _select_device(call: ServiceCall) -> None:
         """Select the active device."""
-        addr = call.data[ATTR_DEVICE]
-        if not addr:
+        if not (addr := call.data[ATTR_DEVICE]):
             _LOGGER.error("Device not found: %s", call.data[ATTR_DEVICE])
             return
         if addr in device_aliases:
@@ -319,9 +309,8 @@ def setup(hass: HomeAssistant, base_config):  # noqa: C901
         hdmi_network.active_source(addr)
         _LOGGER.info("Selected %s (%s)", call.data[ATTR_DEVICE], addr)
 
-    def _update(call):
-        """
-        Update if device update is needed.
+    def _update(call: ServiceCall) -> None:
+        """Update if device update is needed.
 
         Called by service, requests CEC network to update data.
         """
@@ -330,7 +319,7 @@ def setup(hass: HomeAssistant, base_config):  # noqa: C901
     def _new_device(device):
         """Handle new devices which are detected by HDMI network."""
         key = f"{DOMAIN}.{device.name}"
-        hass.data[key] = device
+        hass.data[DOMAIN][key] = device
         ent_platform = base_config[DOMAIN][CONF_TYPES].get(key, platform)
         discovery.load_platform(
             hass,
@@ -372,35 +361,32 @@ def setup(hass: HomeAssistant, base_config):  # noqa: C901
 class CecEntity(Entity):
     """Representation of a HDMI CEC device entity."""
 
+    _attr_should_poll = False
+
     def __init__(self, device, logical) -> None:
         """Initialize the device."""
         self._device = device
-        self._icon = None
-        self._state = None
         self._logical_address = logical
         self.entity_id = "%s.%d" % (DOMAIN, self._logical_address)
+        self._set_attr_name()
+        self._attr_icon = ICONS_BY_TYPE.get(self._device.type, ICON_UNKNOWN)
+
+    def _set_attr_name(self):
+        """Set name."""
+        if (
+            self._device.osd_name is not None
+            and self.vendor_name is not None
+            and self.vendor_name != "Unknown"
+        ):
+            self._attr_name = f"{self.vendor_name} {self._device.osd_name}"
+        elif self._device.osd_name is None:
+            self._attr_name = f"{self._device.type_name} {self._logical_address}"
+        else:
+            self._attr_name = f"{self._device.type_name} {self._logical_address} ({self._device.osd_name})"
 
     def _hdmi_cec_unavailable(self, callback_event):
-        # Change state to unavailable. Without this, entity would remain in
-        # its last state, since the state changes are pushed.
-        self._state = STATE_UNAVAILABLE
+        self._attr_available = False
         self.schedule_update_ha_state(False)
-
-    def update(self):
-        """Update device status."""
-        device = self._device
-        if device.power_status in [POWER_OFF, 3]:
-            self._state = STATE_OFF
-        elif device.status == STATUS_PLAY:
-            self._state = STATE_PLAYING
-        elif device.status == STATUS_STOP:
-            self._state = STATE_IDLE
-        elif device.status == STATUS_STILL:
-            self._state = STATE_PAUSED
-        elif device.power_status in [POWER_ON, 4]:
-            self._state = STATE_ON
-        else:
-            _LOGGER.warning("Unknown state: %d", device.power_status)
 
     async def async_added_to_hass(self):
         """Register HDMI callbacks after initialization."""
@@ -411,32 +397,8 @@ class CecEntity(Entity):
 
     def _update(self, device=None):
         """Device status changed, schedule an update."""
+        self._attr_available = True
         self.schedule_update_ha_state(True)
-
-    @property
-    def should_poll(self):
-        """
-        Return false.
-
-        CecEntity.update() is called by the HDMI network when there is new data.
-        """
-        return False
-
-    @property
-    def name(self):
-        """Return the name of the device."""
-        return (
-            f"{self.vendor_name} {self._device.osd_name}"
-            if (
-                self._device.osd_name is not None
-                and self.vendor_name is not None
-                and self.vendor_name != "Unknown"
-            )
-            else "%s %d" % (self._device.type_name, self._logical_address)
-            if self._device.osd_name is None
-            else "%s %d (%s)"
-            % (self._device.type_name, self._logical_address, self._device.osd_name)
-        )
 
     @property
     def vendor_id(self):
@@ -462,17 +424,6 @@ class CecEntity(Entity):
     def type_id(self):
         """Return the type ID of device."""
         return self._device.type
-
-    @property
-    def icon(self):
-        """Return the icon for device by its type."""
-        return (
-            self._icon
-            if self._icon is not None
-            else ICONS_BY_TYPE.get(self._device.type)
-            if self._device.type in ICONS_BY_TYPE
-            else ICON_UNKNOWN
-        )
 
     @property
     def extra_state_attributes(self):

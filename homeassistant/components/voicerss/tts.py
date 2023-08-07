@@ -1,5 +1,6 @@
 """Support for the voicerss speech service."""
 import asyncio
+from http import HTTPStatus
 import logging
 
 import aiohttp
@@ -7,7 +8,7 @@ import async_timeout
 import voluptuous as vol
 
 from homeassistant.components.tts import CONF_LANG, PLATFORM_SCHEMA, Provider
-from homeassistant.const import CONF_API_KEY, HTTP_OK
+from homeassistant.const import CONF_API_KEY
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 import homeassistant.helpers.config_validation as cv
 
@@ -186,7 +187,7 @@ class VoiceRSSProvider(Provider):
         """Return list of supported languages."""
         return SUPPORT_LANGUAGES
 
-    async def async_get_tts_audio(self, message, language, options=None):
+    async def async_get_tts_audio(self, message, language, options):
         """Load TTS from VoiceRSS."""
         websession = async_get_clientsession(self.hass)
         form_data = self._form_data.copy()
@@ -195,10 +196,10 @@ class VoiceRSSProvider(Provider):
         form_data["hl"] = language
 
         try:
-            with async_timeout.timeout(10):
+            async with async_timeout.timeout(10):
                 request = await websession.post(VOICERSS_API_URL, data=form_data)
 
-                if request.status != HTTP_OK:
+                if request.status != HTTPStatus.OK:
                     _LOGGER.error(
                         "Error %d on load url %s", request.status, request.url
                     )

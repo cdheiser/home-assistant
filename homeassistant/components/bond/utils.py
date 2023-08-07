@@ -5,7 +5,7 @@ import logging
 from typing import Any, cast
 
 from aiohttp import ClientResponseError
-from bond_api import Action, Bond
+from bond_async import Action, Bond, BondType
 
 from homeassistant.util.async_ import gather_with_concurrency
 
@@ -20,12 +20,18 @@ class BondDevice:
     """Helper device class to hold ID and attributes together."""
 
     def __init__(
-        self, device_id: str, attrs: dict[str, Any], props: dict[str, Any]
+        self,
+        device_id: str,
+        attrs: dict[str, Any],
+        props: dict[str, Any],
+        state: dict[str, Any],
     ) -> None:
         """Create a helper device from ID and attributes returned by API."""
         self.device_id = device_id
         self.props = props
-        self._attrs = attrs
+        self.state = state
+        self._attrs = attrs or {}
+        self._supported_actions: set[str] = set(self._attrs.get("actions", []))
 
     def __repr__(self) -> str:
         """Return readable representation of a bond device."""
@@ -33,6 +39,7 @@ class BondDevice:
             "device_id": self.device_id,
             "props": self.props,
             "attrs": self._attrs,
+            "state": self.state,
         }.__repr__()
 
     @property
@@ -65,13 +72,13 @@ class BondDevice:
         """Check if Trust State is turned on."""
         return self.props.get("trust_state", False)
 
+    def has_action(self, action: str) -> bool:
+        """Check to see if the device supports an actions."""
+        return action in self._supported_actions
+
     def _has_any_action(self, actions: set[str]) -> bool:
         """Check to see if the device supports any of the actions."""
-        supported_actions: list[str] = self._attrs["actions"]
-        for action in supported_actions:
-            if action in actions:
-                return True
-        return False
+        return bool(self._supported_actions.intersection(actions))
 
     def supports_speed(self) -> bool:
         """Return True if this device supports any of the speed related commands."""
@@ -80,6 +87,30 @@ class BondDevice:
     def supports_direction(self) -> bool:
         """Return True if this device supports any of the direction related commands."""
         return self._has_any_action({Action.SET_DIRECTION})
+
+    def supports_set_position(self) -> bool:
+        """Return True if this device supports setting the position."""
+        return self._has_any_action({Action.SET_POSITION})
+
+    def supports_open(self) -> bool:
+        """Return True if this device supports opening."""
+        return self._has_any_action({Action.OPEN})
+
+    def supports_close(self) -> bool:
+        """Return True if this device supports closing."""
+        return self._has_any_action({Action.CLOSE})
+
+    def supports_tilt_open(self) -> bool:
+        """Return True if this device supports tilt opening."""
+        return self._has_any_action({Action.TILT_OPEN})
+
+    def supports_tilt_close(self) -> bool:
+        """Return True if this device supports tilt closing."""
+        return self._has_any_action({Action.TILT_CLOSE})
+
+    def supports_hold(self) -> bool:
+        """Return True if this device supports hold aka stop."""
+        return self._has_any_action({Action.HOLD})
 
     def supports_light(self) -> bool:
         """Return True if this device supports any of the light related commands."""
@@ -103,9 +134,10 @@ class BondDevice:
 class BondHub:
     """Hub device representing Bond Bridge."""
 
-    def __init__(self, bond: Bond) -> None:
+    def __init__(self, bond: Bond, host: str) -> None:
         """Initialize Bond Hub."""
         self.bond: Bond = bond
+        self.host = host
         self._bridge: dict[str, Any] = {}
         self._version: dict[str, Any] = {}
         self._devices: list[BondDevice] = []
@@ -124,7 +156,11 @@ class BondHub:
                 break
             setup_device_ids.append(device_id)
             tasks.extend(
-                [self.bond.device(device_id), self.bond.device_properties(device_id)]
+                [
+                    self.bond.device(device_id),
+                    self.bond.device_properties(device_id),
+                    self.bond.device_state(device_id),
+                ]
             )
 
         responses = await gather_with_concurrency(MAX_REQUESTS, *tasks)
@@ -132,10 +168,13 @@ class BondHub:
         for device_id in setup_device_ids:
             self._devices.append(
                 BondDevice(
-                    device_id, responses[response_idx], responses[response_idx + 1]
+                    device_id,
+                    responses[response_idx],
+                    responses[response_idx + 1],
+                    responses[response_idx + 2],
                 )
             )
-            response_idx += 2
+            response_idx += 3
 
         _LOGGER.debug("Discovered Bond devices: %s", self._devices)
         try:
@@ -186,6 +225,11 @@ class BondHub:
         return self._version.get("fw_ver")
 
     @property
+    def mcu_ver(self) -> str | None:
+        """Return this hub hardware version."""
+        return self._version.get("mcu_ver")
+
+    @property
     def devices(self) -> list[BondDevice]:
         """Return a list of all devices controlled by this hub."""
         return self._devices
@@ -193,4 +237,5 @@ class BondHub:
     @property
     def is_bridge(self) -> bool:
         """Return if the Bond is a Bond Bridge."""
-        return bool(self._bridge)
+        bondid = self._version["bondid"]
+        return bool(BondType.is_bridge_from_serial(bondid))

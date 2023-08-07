@@ -1,4 +1,6 @@
 """Support for Blockchain.com sensors."""
+from __future__ import annotations
+
 from datetime import timedelta
 import logging
 
@@ -6,18 +8,17 @@ from pyblockchain import get_balance, validate_address
 import voluptuous as vol
 
 from homeassistant.components.sensor import PLATFORM_SCHEMA, SensorEntity
-from homeassistant.const import ATTR_ATTRIBUTION, CONF_NAME
+from homeassistant.const import CONF_NAME
+from homeassistant.core import HomeAssistant
 import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 
 _LOGGER = logging.getLogger(__name__)
-
-ATTRIBUTION = "Data provided by blockchain.com"
 
 CONF_ADDRESSES = "addresses"
 
 DEFAULT_NAME = "Bitcoin Balance"
-
-ICON = "mdi:currency-btc"
 
 SCAN_INTERVAL = timedelta(minutes=5)
 
@@ -29,16 +30,21 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
 )
 
 
-def setup_platform(hass, config, add_entities, discovery_info=None):
+def setup_platform(
+    hass: HomeAssistant,
+    config: ConfigType,
+    add_entities: AddEntitiesCallback,
+    discovery_info: DiscoveryInfoType | None = None,
+) -> None:
     """Set up the Blockchain.com sensors."""
 
-    addresses = config[CONF_ADDRESSES]
-    name = config[CONF_NAME]
+    addresses: list[str] = config[CONF_ADDRESSES]
+    name: str = config[CONF_NAME]
 
     for address in addresses:
         if not validate_address(address):
             _LOGGER.error("Bitcoin address is not valid: %s", address)
-            return False
+            return
 
     add_entities([BlockchainSensor(name, addresses)], True)
 
@@ -46,39 +52,15 @@ def setup_platform(hass, config, add_entities, discovery_info=None):
 class BlockchainSensor(SensorEntity):
     """Representation of a Blockchain.com sensor."""
 
-    def __init__(self, name, addresses):
+    _attr_attribution = "Data provided by blockchain.com"
+    _attr_icon = "mdi:currency-btc"
+    _attr_native_unit_of_measurement = "BTC"
+
+    def __init__(self, name: str, addresses: list[str]) -> None:
         """Initialize the sensor."""
-        self._name = name
+        self._attr_name = name
         self.addresses = addresses
-        self._state = None
-        self._unit_of_measurement = "BTC"
 
-    @property
-    def name(self):
-        """Return the name of the sensor."""
-        return self._name
-
-    @property
-    def state(self):
-        """Return the state of the sensor."""
-        return self._state
-
-    @property
-    def unit_of_measurement(self):
-        """Return the unit of measurement this sensor expresses itself in."""
-        return self._unit_of_measurement
-
-    @property
-    def icon(self):
-        """Return the icon to use in the frontend, if any."""
-        return ICON
-
-    @property
-    def extra_state_attributes(self):
-        """Return the state attributes of the sensor."""
-        return {ATTR_ATTRIBUTION: ATTRIBUTION}
-
-    def update(self):
+    def update(self) -> None:
         """Get the latest state of the sensor."""
-
-        self._state = get_balance(self.addresses)
+        self._attr_native_value = get_balance(self.addresses)

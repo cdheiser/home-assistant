@@ -1,21 +1,21 @@
 """The tests for the Sure Petcare binary sensor platform."""
-
 from homeassistant.components.surepetcare.const import DOMAIN
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 from homeassistant.setup import async_setup_component
 
 from . import HOUSEHOLD_ID, HUB_ID, MOCK_CONFIG
 
 EXPECTED_ENTITY_IDS = {
-    "binary_sensor.pet_flap_pet_flap_connectivity": f"{HOUSEHOLD_ID}-13576-connectivity",
-    "binary_sensor.cat_flap_cat_flap_connectivity": f"{HOUSEHOLD_ID}-13579-connectivity",
-    "binary_sensor.feeder_feeder_connectivity": f"{HOUSEHOLD_ID}-12345-connectivity",
-    "binary_sensor.pet_pet": f"{HOUSEHOLD_ID}-24680",
-    "binary_sensor.hub_hub": f"{HOUSEHOLD_ID}-{HUB_ID}",
+    "binary_sensor.pet_flap_connectivity": f"{HOUSEHOLD_ID}-13576-connectivity",
+    "binary_sensor.cat_flap_connectivity": f"{HOUSEHOLD_ID}-13579-connectivity",
+    "binary_sensor.feeder_connectivity": f"{HOUSEHOLD_ID}-12345-connectivity",
+    "binary_sensor.pet": f"{HOUSEHOLD_ID}-24680",
+    "binary_sensor.hub": f"{HOUSEHOLD_ID}-{HUB_ID}",
 }
 
 
-async def test_binary_sensors(hass, surepetcare) -> None:
+async def test_binary_sensors(hass: HomeAssistant, surepetcare) -> None:
     """Test the generation of unique ids."""
     assert await async_setup_component(hass, DOMAIN, MOCK_CONFIG)
     await hass.async_block_till_done()

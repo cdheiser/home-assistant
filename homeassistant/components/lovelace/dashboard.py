@@ -6,7 +6,6 @@ import logging
 import os
 from pathlib import Path
 import time
-from typing import Optional, cast
 
 import voluptuous as vol
 
@@ -121,9 +120,7 @@ class LovelaceStorage(LovelaceConfig):
         if self._data is None:
             await self._load()
 
-        config = self._data["config"]
-
-        if config is None:
+        if (config := self._data["config"]) is None:
             raise ConfigNotFound
 
         return config
@@ -220,7 +217,7 @@ def _config_info(mode, config):
     }
 
 
-class DashboardsCollection(collection.StorageCollection):
+class DashboardsCollection(collection.DictStorageCollection):
     """Collection of dashboards."""
 
     CREATE_SCHEMA = vol.Schema(STORAGE_DASHBOARD_CREATE_FIELDS)
@@ -230,15 +227,12 @@ class DashboardsCollection(collection.StorageCollection):
         """Initialize the dashboards collection."""
         super().__init__(
             storage.Store(hass, DASHBOARDS_STORAGE_VERSION, DASHBOARDS_STORAGE_KEY),
-            _LOGGER,
         )
 
-    async def _async_load_data(self) -> dict | None:
+    async def _async_load_data(self) -> collection.SerializedStorageCollection | None:
         """Load the data."""
-        data = await self.store.async_load()
-
-        if data is None:
-            return cast(Optional[dict], data)
+        if (data := await self.store.async_load()) is None:
+            return data
 
         updated = False
 
@@ -250,7 +244,7 @@ class DashboardsCollection(collection.StorageCollection):
         if updated:
             await self.store.async_save(data)
 
-        return cast(Optional[dict], data)
+        return data
 
     async def _process_create_data(self, data: dict) -> dict:
         """Validate the config is valid."""
@@ -267,10 +261,10 @@ class DashboardsCollection(collection.StorageCollection):
         """Suggest an ID based on the config."""
         return info[CONF_URL_PATH]
 
-    async def _update_data(self, data: dict, update_data: dict) -> dict:
+    async def _update_data(self, item: dict, update_data: dict) -> dict:
         """Return a new updated data object."""
         update_data = self.UPDATE_SCHEMA(update_data)
-        updated = {**data, **update_data}
+        updated = {**item, **update_data}
 
         if CONF_ICON in updated and updated[CONF_ICON] is None:
             updated.pop(CONF_ICON)

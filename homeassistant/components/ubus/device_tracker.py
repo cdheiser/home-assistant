@@ -1,4 +1,5 @@
 """Support for OpenWRT (ubus) routers."""
+from __future__ import annotations
 
 import logging
 import re
@@ -12,7 +13,9 @@ from homeassistant.components.device_tracker import (
     DeviceScanner,
 )
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_USERNAME
+from homeassistant.core import HomeAssistant
 import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers.typing import ConfigType
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -32,9 +35,10 @@ PLATFORM_SCHEMA = PARENT_PLATFORM_SCHEMA.extend(
 )
 
 
-def get_scanner(hass, config):
+def get_scanner(hass: HomeAssistant, config: ConfigType) -> DeviceScanner | None:
     """Validate the configuration and return an ubus scanner."""
     dhcp_sw = config[DOMAIN][CONF_DHCP_SOFTWARE]
+    scanner: DeviceScanner
     if dhcp_sw == "dnsmasq":
         scanner = DnsmasqUbusDeviceScanner(config[DOMAIN])
     elif dhcp_sw == "odhcpd":
@@ -54,8 +58,7 @@ def _refresh_on_access_denied(func):
             return func(self, *args, **kwargs)
         except PermissionError:
             _LOGGER.warning(
-                "Invalid session detected."
-                " Trying to refresh session_id and re-run RPC"
+                "Invalid session detected. Trying to refresh session_id and re-run RPC"
             )
             self.ubus.connect()
 
@@ -65,21 +68,20 @@ def _refresh_on_access_denied(func):
 
 
 class UbusDeviceScanner(DeviceScanner):
-    """
-    This class queries a wireless router running OpenWrt firmware.
+    """Class which queries a wireless router running OpenWrt firmware.
 
     Adapted from Tomato scanner.
     """
 
     def __init__(self, config):
         """Initialize the scanner."""
-        host = config[CONF_HOST]
+        self.host = config[CONF_HOST]
         self.username = config[CONF_USERNAME]
         self.password = config[CONF_PASSWORD]
 
         self.parse_api_pattern = re.compile(r"(?P<param>\w*) = (?P<value>.*);")
         self.last_results = {}
-        self.url = f"http://{host}/ubus"
+        self.url = f"http://{self.host}/ubus"
 
         self.ubus = Ubus(self.url, self.username, self.password)
         self.hostapd = []
@@ -106,6 +108,10 @@ class UbusDeviceScanner(DeviceScanner):
         name = self.mac2name.get(device.upper(), None)
         return name
 
+    async def async_get_extra_attributes(self, device: str) -> dict[str, str]:
+        """Return the host to distinguish between multiple routers."""
+        return {"host": self.host}
+
     @_refresh_on_access_denied
     def _update_info(self):
         """Ensure the information from the router is up to date.
@@ -125,12 +131,10 @@ class UbusDeviceScanner(DeviceScanner):
         results = 0
         # for each access point
         for hostapd in self.hostapd:
-            result = self.ubus.get_hostapd_clients(hostapd)
-
-            if result:
+            if result := self.ubus.get_hostapd_clients(hostapd):
                 results = results + 1
                 # Check for each device is authorized (valid wpa key)
-                for key in result["clients"].keys():
+                for key in result["clients"]:
                     device = result["clients"][key]
                     if device["authorized"]:
                         self.last_results.append(key)
@@ -148,8 +152,7 @@ class DnsmasqUbusDeviceScanner(UbusDeviceScanner):
 
     def _generate_mac2name(self):
         if self.leasefile is None:
-            result = self.ubus.get_uci_config("dhcp", "dnsmasq")
-            if result:
+            if result := self.ubus.get_uci_config("dhcp", "dnsmasq"):
                 values = result["values"].values()
                 self.leasefile = next(iter(values))["leasefile"]
             else:
@@ -170,8 +173,7 @@ class OdhcpdUbusDeviceScanner(UbusDeviceScanner):
     """Implement the Ubus device scanning for the odhcp DHCP server."""
 
     def _generate_mac2name(self):
-        result = self.ubus.get_dhcp_method("ipv4leases")
-        if result:
+        if result := self.ubus.get_dhcp_method("ipv4leases"):
             self.mac2name = {}
             for device in result["device"].values():
                 for lease in device["leases"]:

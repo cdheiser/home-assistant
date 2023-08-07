@@ -6,7 +6,7 @@ from gammu.asyncworker import GammuAsyncWorker  # pylint: disable=import-error
 
 from homeassistant.core import callback
 
-from .const import DOMAIN
+from .const import DOMAIN, SMS_STATE_UNREAD
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -14,34 +14,43 @@ _LOGGER = logging.getLogger(__name__)
 class Gateway:
     """SMS gateway to interact with a GSM modem."""
 
-    def __init__(self, worker, hass):
+    def __init__(self, config, hass):
         """Initialize the sms gateway."""
-        self._worker = worker
+        _LOGGER.debug("Init with connection mode:%s", config["Connection"])
+        self._worker = GammuAsyncWorker(self.sms_pull)
+        self._worker.configure(config)
         self._hass = hass
+        self._first_pull = True
+        self.manufacturer = None
+        self.model = None
+        self.firmware = None
 
     async def init_async(self):
-        """Initialize the sms gateway asynchronously."""
-        try:
-            await self._worker.set_incoming_sms_async()
-        except gammu.ERR_NOTSUPPORTED:
-            _LOGGER.warning("Your phone does not support incoming SMS notifications!")
-        else:
-            await self._worker.set_incoming_callback_async(self.sms_callback)
+        """Initialize the sms gateway asynchronously. This method is also called in config flow to verify connection."""
+        await self._worker.init_async()
+        self.manufacturer = await self.get_manufacturer_async()
+        self.model = await self.get_model_async()
+        self.firmware = await self.get_firmware_async()
 
-    def sms_callback(self, state_machine, callback_type, callback_data):
-        """Receive notification about incoming event.
+    def sms_pull(self, state_machine):
+        """Pull device.
+
+        @param state_machine: state machine
+        @type state_machine: gammu.StateMachine
+        """
+        state_machine.ReadDevice()
+
+        _LOGGER.debug("Pulling modem")
+        self.sms_read_messages(state_machine, self._first_pull)
+        self._first_pull = False
+
+    def sms_read_messages(self, state_machine, force=False):
+        """Read all received SMS messages.
 
         @param state_machine: state machine which invoked action
         @type state_machine: gammu.StateMachine
-        @param callback_type: type of action, one of Call, SMS, CB, USSD
-        @type callback_type: string
-        @param data: event data
-        @type data: hash
         """
-        _LOGGER.debug(
-            "Received incoming event type:%s,data:%s", callback_type, callback_data
-        )
-        entries = self.get_and_delete_all_sms(state_machine)
+        entries = self.get_and_delete_all_sms(state_machine, force)
         _LOGGER.debug("SMS entries:%s", entries)
         data = []
 
@@ -49,26 +58,28 @@ class Gateway:
             decoded_entry = gammu.DecodeSMS(entry)
             message = entry[0]
             _LOGGER.debug("Processing sms:%s,decoded:%s", message, decoded_entry)
-            if decoded_entry is None:
-                text = message["Text"]
-            else:
-                text = ""
-                for inner_entry in decoded_entry["Entries"]:
-                    if inner_entry["Buffer"] is not None:
-                        text = text + inner_entry["Buffer"]
+            sms_state = message["State"]
+            _LOGGER.debug("SMS state:%s", sms_state)
+            if sms_state == SMS_STATE_UNREAD:
+                if decoded_entry is None:
+                    text = message["Text"]
+                else:
+                    text = ""
+                    for inner_entry in decoded_entry["Entries"]:
+                        if inner_entry["Buffer"] is not None:
+                            text += inner_entry["Buffer"]
 
-            event_data = {
-                "phone": message["Number"],
-                "date": str(message["DateTime"]),
-                "message": text,
-            }
+                event_data = {
+                    "phone": message["Number"],
+                    "date": str(message["DateTime"]),
+                    "message": text,
+                }
 
-            _LOGGER.debug("Append event data:%s", event_data)
-            data.append(event_data)
+                _LOGGER.debug("Append event data:%s", event_data)
+                data.append(event_data)
 
         self._hass.add_job(self._notify_incoming_sms, data)
 
-    # pylint: disable=no-self-use
     def get_and_delete_all_sms(self, state_machine, force=False):
         """Read and delete all SMS in the modem."""
         # Read SMS memory status ...
@@ -149,6 +160,40 @@ class Gateway:
         """Get the current signal level of the modem."""
         return await self._worker.get_signal_quality_async()
 
+    async def get_network_info_async(self):
+        """Get the current network info of the modem."""
+        network_info = await self._worker.get_network_info_async()
+        # Looks like there is a bug and it's empty for any modem https://github.com/gammu/python-gammu/issues/31, so try workaround
+        if not network_info["NetworkName"]:
+            network_info["NetworkName"] = gammu.GSMNetworks.get(
+                network_info["NetworkCode"]
+            )
+        return network_info
+
+    async def get_manufacturer_async(self):
+        """Get the manufacturer of the modem."""
+        return await self._worker.get_manufacturer_async()
+
+    async def get_model_async(self):
+        """Get the model of the modem."""
+        model = await self._worker.get_model_async()
+        if not model or not model[0]:
+            return
+        display = model[0]  # Identification model
+        if model[1]:  # Real model
+            display = f"{display} ({model[1]})"
+        return display
+
+    async def get_firmware_async(self):
+        """Get the firmware information of the modem."""
+        firmware = await self._worker.get_firmware_async()
+        if not firmware or not firmware[0]:
+            return
+        display = firmware[0]  # Version
+        if firmware[1]:  # Date
+            display = f"{display} ({firmware[1]})"
+        return display
+
     async def terminate_async(self):
         """Terminate modem connection."""
         return await self._worker.terminate_async()
@@ -157,12 +202,14 @@ class Gateway:
 async def create_sms_gateway(config, hass):
     """Create the sms gateway."""
     try:
-        worker = GammuAsyncWorker()
-        worker.configure(config)
-        await worker.init_async()
-        gateway = Gateway(worker, hass)
-        await gateway.init_async()
+        gateway = Gateway(config, hass)
+        try:
+            await gateway.init_async()
+        except gammu.GSMError as exc:
+            _LOGGER.error("Failed to initialize, error %s", exc)
+            await gateway.terminate_async()
+            return None
         return gateway
     except gammu.GSMError as exc:
-        _LOGGER.error("Failed to initialize, error %s", exc)
+        _LOGGER.error("Failed to create async worker, error %s", exc)
         return None

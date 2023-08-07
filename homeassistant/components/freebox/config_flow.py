@@ -5,7 +5,9 @@ from freebox_api.exceptions import AuthorizationError, HttpRequestError
 import voluptuous as vol
 
 from homeassistant import config_entries
+from homeassistant.components import zeroconf
 from homeassistant.const import CONF_HOST, CONF_PORT
+from homeassistant.data_entry_flow import FlowResult
 
 from .const import DOMAIN
 from .router import get_api
@@ -18,9 +20,9 @@ class FreeboxFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
 
     VERSION = 1
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize Freebox config flow."""
-        self._host = None
+        self._host: str
         self._port = None
 
     def _show_setup_form(self, user_input=None, errors=None):
@@ -40,9 +42,9 @@ class FreeboxFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             errors=errors or {},
         )
 
-    async def async_step_user(self, user_input=None):
+    async def async_step_user(self, user_input=None) -> FlowResult:
         """Handle a flow initiated by the user."""
-        errors = {}
+        errors: dict[str, str] = {}
 
         if user_input is None:
             return self._show_setup_form(user_input, errors)
@@ -56,7 +58,7 @@ class FreeboxFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
 
         return await self.async_step_link()
 
-    async def async_step_link(self, user_input=None):
+    async def async_step_link(self, user_input=None) -> FlowResult:
         """Attempt to link with the Freebox router.
 
         Given a configured host, will ask the user to press the button
@@ -75,7 +77,6 @@ class FreeboxFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             # Check permissions
             await fbx.system.get_config()
             await fbx.lan.get_hosts_list()
-            await self.hass.async_block_till_done()
 
             # Close connection
             await fbx.close()
@@ -101,12 +102,15 @@ class FreeboxFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(step_id="link", errors=errors)
 
-    async def async_step_import(self, user_input=None):
+    async def async_step_import(self, user_input=None) -> FlowResult:
         """Import a config entry."""
         return await self.async_step_user(user_input)
 
-    async def async_step_zeroconf(self, discovery_info: dict):
+    async def async_step_zeroconf(
+        self, discovery_info: zeroconf.ZeroconfServiceInfo
+    ) -> FlowResult:
         """Initialize flow from zeroconf."""
-        host = discovery_info["properties"]["api_domain"]
-        port = discovery_info["properties"]["https_port"]
+        zeroconf_properties = discovery_info.properties
+        host = zeroconf_properties["api_domain"]
+        port = zeroconf_properties["https_port"]
         return await self.async_step_user({CONF_HOST: host, CONF_PORT: port})

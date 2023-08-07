@@ -1,37 +1,47 @@
-"""This component provides support for RainMachine programs and zones."""
+"""Component providing support for RainMachine programs and zones."""
 from __future__ import annotations
 
-from collections.abc import Coroutine
+import asyncio
+from collections.abc import Awaitable, Callable, Coroutine
+from dataclasses import dataclass
 from datetime import datetime
+from typing import Any, Concatenate, ParamSpec, TypeVar
 
-from regenmaschine.controller import Controller
-from regenmaschine.errors import RequestError
+from regenmaschine.errors import RainMachineError
 import voluptuous as vol
 
-from homeassistant.components.switch import SwitchEntity
+from homeassistant.components.switch import SwitchEntity, SwitchEntityDescription
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import ATTR_ID
+from homeassistant.const import ATTR_ID, EntityCategory
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv, entity_platform
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
-from . import RainMachineEntity, async_update_programs_and_zones
+from . import RainMachineData, RainMachineEntity, async_update_programs_and_zones
 from .const import (
-    CONF_ZONE_RUN_TIME,
-    DATA_CONTROLLER,
-    DATA_COORDINATOR,
+    CONF_DEFAULT_ZONE_RUN_TIME,
+    CONF_DURATION,
+    CONF_USE_APP_RUN_TIMES,
     DATA_PROGRAMS,
+    DATA_PROVISION_SETTINGS,
+    DATA_RESTRICTIONS_UNIVERSAL,
     DATA_ZONES,
     DEFAULT_ZONE_RUN,
     DOMAIN,
-    LOGGER,
 )
+from .model import (
+    RainMachineEntityDescription,
+    RainMachineEntityDescriptionMixinDataKey,
+    RainMachineEntityDescriptionMixinUid,
+)
+from .util import RUN_STATE_MAP, key_exists
 
 ATTR_AREA = "area"
 ATTR_CS_ON = "cs_on"
 ATTR_CURRENT_CYCLE = "current_cycle"
 ATTR_CYCLES = "cycles"
+ATTR_ZONE_RUN_TIME = "zone_run_time_from_app"
 ATTR_DELAY = "delay"
 ATTR_DELAY_ON = "delay_on"
 ATTR_FIELD_CAPACITY = "field_capacity"
@@ -45,17 +55,10 @@ ATTR_SOIL_TYPE = "soil_type"
 ATTR_SPRINKLER_TYPE = "sprinkler_head_type"
 ATTR_STATUS = "status"
 ATTR_SUN_EXPOSURE = "sun_exposure"
-ATTR_TIME_REMAINING = "time_remaining"
 ATTR_VEGETATION_TYPE = "vegetation_type"
 ATTR_ZONES = "zones"
 
-CONF_PROGRAM_ID = "program_id"
-CONF_SECONDS = "seconds"
-CONF_ZONE_ID = "zone_id"
-
 DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
-
-RUN_STATUS_MAP = {0: "Not Running", 1: "Running", 2: "Queued"}
 
 SOIL_TYPE_MAP = {
     0: "Not Set",
@@ -84,9 +87,10 @@ SLOPE_TYPE_MAP = {
 SPRINKLER_TYPE_MAP = {
     0: "Not Set",
     1: "Popup Spray",
-    2: "Rotors",
+    2: "Rotors Low Rate",
     3: "Surface Drip",
     4: "Bubblers Drip",
+    5: "Rotors High Rate",
     99: "Other",
 }
 
@@ -94,19 +98,82 @@ SUN_EXPOSURE_MAP = {0: "Not Set", 1: "Full Sun", 2: "Partial Shade", 3: "Full Sh
 
 VEGETATION_MAP = {
     0: "Not Set",
+    1: "Not Set",
     2: "Cool Season Grass",
     3: "Fruit Trees",
     4: "Flowers",
     5: "Vegetables",
     6: "Citrus",
-    7: "Trees and Bushes",
+    7: "Bushes",
     9: "Drought Tolerant Plants",
     10: "Warm Season Grass",
+    11: "Trees",
     99: "Other",
 }
 
-SWITCH_TYPE_PROGRAM = "program"
-SWITCH_TYPE_ZONE = "zone"
+
+_T = TypeVar("_T", bound="RainMachineBaseSwitch")
+_P = ParamSpec("_P")
+
+
+def raise_on_request_error(
+    func: Callable[Concatenate[_T, _P], Awaitable[None]]
+) -> Callable[Concatenate[_T, _P], Coroutine[Any, Any, None]]:
+    """Define a decorator to raise on a request error."""
+
+    async def decorator(self: _T, *args: _P.args, **kwargs: _P.kwargs) -> None:
+        """Decorate."""
+        try:
+            await func(self, *args, **kwargs)
+        except RainMachineError as err:
+            raise HomeAssistantError(
+                f"Error while executing {func.__name__}: {err}",
+            ) from err
+
+    return decorator
+
+
+@dataclass
+class RainMachineSwitchDescription(
+    SwitchEntityDescription,
+    RainMachineEntityDescription,
+):
+    """Describe a RainMachine switch."""
+
+
+@dataclass
+class RainMachineActivitySwitchDescription(
+    RainMachineSwitchDescription, RainMachineEntityDescriptionMixinUid
+):
+    """Describe a RainMachine activity (program/zone) switch."""
+
+
+@dataclass
+class RainMachineRestrictionSwitchDescription(
+    RainMachineSwitchDescription, RainMachineEntityDescriptionMixinDataKey
+):
+    """Describe a RainMachine restriction switch."""
+
+
+TYPE_RESTRICTIONS_FREEZE_PROTECT_ENABLED = "freeze_protect_enabled"
+TYPE_RESTRICTIONS_HOT_DAYS_EXTRA_WATERING = "hot_days_extra_watering"
+
+RESTRICTIONS_SWITCH_DESCRIPTIONS = (
+    RainMachineRestrictionSwitchDescription(
+        key=TYPE_RESTRICTIONS_FREEZE_PROTECT_ENABLED,
+        translation_key=TYPE_RESTRICTIONS_FREEZE_PROTECT_ENABLED,
+        icon="mdi:snowflake-alert",
+        api_category=DATA_RESTRICTIONS_UNIVERSAL,
+        data_key="freezeProtectEnabled",
+    ),
+    RainMachineRestrictionSwitchDescription(
+        key=TYPE_RESTRICTIONS_HOT_DAYS_EXTRA_WATERING,
+        translation_key=TYPE_RESTRICTIONS_HOT_DAYS_EXTRA_WATERING,
+        icon="mdi:heat-wave",
+        api_category=DATA_RESTRICTIONS_UNIVERSAL,
+        data_key="hotDaysExtraWatering",
+    ),
+)
 
 
 async def async_setup_entry(
@@ -115,281 +182,361 @@ async def async_setup_entry(
     """Set up RainMachine switches based on a config entry."""
     platform = entity_platform.async_get_current_platform()
 
-    alter_program_schema = {vol.Required(CONF_PROGRAM_ID): cv.positive_int}
-    alter_zone_schema = {vol.Required(CONF_ZONE_ID): cv.positive_int}
-
-    for service_name, schema, method in [
-        ("disable_program", alter_program_schema, "async_disable_program"),
-        ("disable_zone", alter_zone_schema, "async_disable_zone"),
-        ("enable_program", alter_program_schema, "async_enable_program"),
-        ("enable_zone", alter_zone_schema, "async_enable_zone"),
-        (
-            "pause_watering",
-            {vol.Required(CONF_SECONDS): cv.positive_int},
-            "async_pause_watering",
-        ),
-        (
-            "start_program",
-            {vol.Required(CONF_PROGRAM_ID): cv.positive_int},
-            "async_start_program",
-        ),
+    for service_name, schema, method in (
+        ("start_program", {}, "async_start_program"),
         (
             "start_zone",
             {
-                vol.Required(CONF_ZONE_ID): cv.positive_int,
                 vol.Optional(
-                    CONF_ZONE_RUN_TIME, default=DEFAULT_ZONE_RUN
-                ): cv.positive_int,
+                    CONF_DEFAULT_ZONE_RUN_TIME, default=DEFAULT_ZONE_RUN
+                ): cv.positive_int
             },
             "async_start_zone",
         ),
-        ("stop_all", {}, "async_stop_all"),
-        (
-            "stop_program",
-            {vol.Required(CONF_PROGRAM_ID): cv.positive_int},
-            "async_stop_program",
-        ),
-        ("stop_zone", {vol.Required(CONF_ZONE_ID): cv.positive_int}, "async_stop_zone"),
-        ("unpause_watering", {}, "async_unpause_watering"),
-    ]:
+        ("stop_program", {}, "async_stop_program"),
+        ("stop_zone", {}, "async_stop_zone"),
+    ):
         platform.async_register_entity_service(service_name, schema, method)
 
-    controller = hass.data[DOMAIN][DATA_CONTROLLER][entry.entry_id]
-    programs_coordinator = hass.data[DOMAIN][DATA_COORDINATOR][entry.entry_id][
-        DATA_PROGRAMS
-    ]
-    zones_coordinator = hass.data[DOMAIN][DATA_COORDINATOR][entry.entry_id][DATA_ZONES]
+    data: RainMachineData = hass.data[DOMAIN][entry.entry_id]
+    entities: list[RainMachineBaseSwitch] = []
 
-    entities = []
-    for uid, program in programs_coordinator.data.items():
-        entities.append(
-            RainMachineProgram(
-                programs_coordinator, controller, uid, program["name"], entry
+    for kind, api_category, switch_class, switch_enabled_class in (
+        ("program", DATA_PROGRAMS, RainMachineProgram, RainMachineProgramEnabled),
+        ("zone", DATA_ZONES, RainMachineZone, RainMachineZoneEnabled),
+    ):
+        coordinator = data.coordinators[api_category]
+        for uid, activity in coordinator.data.items():
+            name = activity["name"].capitalize()
+
+            # Add a switch to start/stop the program or zone:
+            entities.append(
+                switch_class(
+                    entry,
+                    data,
+                    RainMachineActivitySwitchDescription(
+                        key=f"{kind}_{uid}",
+                        name=name,
+                        api_category=api_category,
+                        uid=uid,
+                    ),
+                )
             )
-        )
-    for uid, zone in zones_coordinator.data.items():
-        entities.append(
-            RainMachineZone(zones_coordinator, controller, uid, zone["name"], entry)
-        )
+
+            # Add a switch to enabled/disable the program or zone:
+            entities.append(
+                switch_enabled_class(
+                    entry,
+                    data,
+                    RainMachineActivitySwitchDescription(
+                        key=f"{kind}_{uid}_enabled",
+                        name=f"{name} enabled",
+                        api_category=api_category,
+                        uid=uid,
+                    ),
+                )
+            )
+
+    # Add switches to control restrictions:
+    for description in RESTRICTIONS_SWITCH_DESCRIPTIONS:
+        coordinator = data.coordinators[description.api_category]
+        if not key_exists(coordinator.data, description.data_key):
+            continue
+        entities.append(RainMachineRestrictionSwitch(entry, data, description))
 
     async_add_entities(entities)
 
 
-class RainMachineSwitch(RainMachineEntity, SwitchEntity):
-    """A class to represent a generic RainMachine switch."""
+class RainMachineBaseSwitch(RainMachineEntity, SwitchEntity):
+    """Define a base RainMachine switch."""
+
+    entity_description: RainMachineSwitchDescription
 
     def __init__(
         self,
-        coordinator: DataUpdateCoordinator,
-        controller: Controller,
-        uid: int,
-        name: str,
         entry: ConfigEntry,
+        data: RainMachineData,
+        description: RainMachineSwitchDescription,
     ) -> None:
-        """Initialize a generic RainMachine switch."""
-        super().__init__(coordinator, controller)
-        self._data = coordinator.data[uid]
+        """Initialize."""
+        super().__init__(entry, data, description)
+
+        self._attr_is_on = False
         self._entry = entry
-        self._is_active = True
-        self._is_on = False
-        self._name = name
-        self._switch_type = type(self).__name__
-        self._uid = uid
 
-    @property
-    def available(self) -> bool:
-        """Return True if entity is available."""
-        return self._is_active and self.coordinator.last_update_success
-
-    @property
-    def icon(self) -> str:
-        """Return the icon."""
-        return "mdi:water"
-
-    @property
-    def is_on(self) -> bool:
-        """Return whether the program is running."""
-        return self._is_on
-
-    @property
-    def unique_id(self) -> str:
-        """Return a unique, Home Assistant friendly identifier for this entity."""
-        return f"{self._unique_id}_{self._switch_type}_{self._uid}"
-
-    async def _async_run_switch_coroutine(self, api_coro: Coroutine) -> None:
-        """Run a coroutine to toggle the switch."""
-        try:
-            resp = await api_coro
-        except RequestError as err:
-            LOGGER.error(
-                'Error while toggling %s "%s": %s',
-                self._switch_type,
-                self.unique_id,
-                err,
-            )
-            return
-
-        if resp["statusCode"] != 0:
-            LOGGER.error(
-                'Error while toggling %s "%s": %s',
-                self._switch_type,
-                self.unique_id,
-                resp["message"],
-            )
-            return
-
-        # Because of how inextricably linked programs and zones are, anytime one is
-        # toggled, we make sure to update the data of both coordinators:
+    @callback
+    def _update_activities(self) -> None:
+        """Update all activity data."""
         self.hass.async_create_task(
             async_update_programs_and_zones(self.hass, self._entry)
         )
 
-    async def async_disable_program(self, *, program_id):
-        """Disable a program."""
-        await self._controller.programs.disable(program_id)
-        await async_update_programs_and_zones(self.hass, self._entry)
+    async def async_start_program(self) -> None:
+        """Execute the start_program entity service."""
+        raise NotImplementedError("Service not implemented for this entity")
 
-    async def async_disable_zone(self, *, zone_id):
-        """Disable a zone."""
-        await self._controller.zones.disable(zone_id)
-        await async_update_programs_and_zones(self.hass, self._entry)
+    async def async_start_zone(self, *, zone_run_time: int) -> None:
+        """Execute the start_zone entity service."""
+        raise NotImplementedError("Service not implemented for this entity")
 
-    async def async_enable_program(self, *, program_id):
-        """Enable a program."""
-        await self._controller.programs.enable(program_id)
-        await async_update_programs_and_zones(self.hass, self._entry)
+    async def async_stop_program(self) -> None:
+        """Execute the stop_program entity service."""
+        raise NotImplementedError("Service not implemented for this entity")
 
-    async def async_enable_zone(self, *, zone_id):
-        """Enable a zone."""
-        await self._controller.zones.enable(zone_id)
-        await async_update_programs_and_zones(self.hass, self._entry)
-
-    async def async_pause_watering(self, *, seconds):
-        """Pause watering for a set number of seconds."""
-        await self._controller.watering.pause_all(seconds)
-        await async_update_programs_and_zones(self.hass, self._entry)
-
-    async def async_start_program(self, *, program_id):
-        """Start a particular program."""
-        await self._controller.programs.start(program_id)
-        await async_update_programs_and_zones(self.hass, self._entry)
-
-    async def async_start_zone(self, *, zone_id, zone_run_time):
-        """Start a particular zone for a certain amount of time."""
-        await self._controller.zones.start(zone_id, zone_run_time)
-        await async_update_programs_and_zones(self.hass, self._entry)
-
-    async def async_stop_all(self):
-        """Stop all watering."""
-        await self._controller.watering.stop_all()
-        await async_update_programs_and_zones(self.hass, self._entry)
-
-    async def async_stop_program(self, *, program_id):
-        """Stop a program."""
-        await self._controller.programs.stop(program_id)
-        await async_update_programs_and_zones(self.hass, self._entry)
-
-    async def async_stop_zone(self, *, zone_id):
-        """Stop a zone."""
-        await self._controller.zones.stop(zone_id)
-        await async_update_programs_and_zones(self.hass, self._entry)
-
-    async def async_unpause_watering(self):
-        """Unpause watering."""
-        await self._controller.watering.unpause_all()
-        await async_update_programs_and_zones(self.hass, self._entry)
-
-    @callback
-    def update_from_latest_data(self) -> None:
-        """Update the state."""
-        self._data = self.coordinator.data[self._uid]
-        self._is_active = self._data["active"]
+    async def async_stop_zone(self) -> None:
+        """Execute the stop_zone entity service."""
+        raise NotImplementedError("Service not implemented for this entity")
 
 
-class RainMachineProgram(RainMachineSwitch):
-    """A RainMachine program."""
+class RainMachineActivitySwitch(RainMachineBaseSwitch):
+    """Define a RainMachine switch to start/stop an activity (program or zone)."""
 
-    @property
-    def zones(self) -> list:
-        """Return a list of active zones associated with this program."""
-        return [z for z in self._data["wateringTimes"] if z["active"]]
+    _attr_icon = "mdi:water"
+    entity_description: RainMachineActivitySwitchDescription
 
-    async def async_turn_off(self, **kwargs) -> None:
-        """Turn the program off."""
-        await self._async_run_switch_coroutine(
-            self._controller.programs.stop(self._uid)
-        )
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        """Turn the switch off.
 
-    async def async_turn_on(self, **kwargs) -> None:
-        """Turn the program on."""
-        await self._async_run_switch_coroutine(
-            self._controller.programs.start(self._uid)
-        )
+        The only way this could occur is if someone rapidly turns a disabled activity
+        off right after turning it on.
+        """
+        if not self.coordinator.data[self.entity_description.uid]["active"]:
+            raise HomeAssistantError(
+                f"Cannot turn off an inactive program/zone: {self.name}"
+            )
+
+        await self.async_turn_off_when_active(**kwargs)
+
+    @raise_on_request_error
+    async def async_turn_off_when_active(self, **kwargs: Any) -> None:
+        """Turn the switch off when its associated activity is active."""
+        raise NotImplementedError
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        """Turn the switch on."""
+        if not self.coordinator.data[self.entity_description.uid]["active"]:
+            self._attr_is_on = False
+            self.async_write_ha_state()
+            raise HomeAssistantError(
+                f"Cannot turn on an inactive program/zone: {self.name}"
+            )
+
+        await self.async_turn_on_when_active(**kwargs)
+
+    @raise_on_request_error
+    async def async_turn_on_when_active(self, **kwargs: Any) -> None:
+        """Turn the switch on when its associated activity is active."""
+        raise NotImplementedError
+
+
+class RainMachineEnabledSwitch(RainMachineBaseSwitch):
+    """Define a RainMachine switch to enable/disable an activity (program or zone)."""
+
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_icon = "mdi:cog"
+    entity_description: RainMachineActivitySwitchDescription
 
     @callback
     def update_from_latest_data(self) -> None:
-        """Update the state."""
-        super().update_from_latest_data()
+        """Update the entity when new data is received."""
+        self._attr_is_on = self.coordinator.data[self.entity_description.uid]["active"]
 
-        self._is_on = bool(self._data["status"])
 
-        if self._data.get("nextRun") is not None:
+class RainMachineProgram(RainMachineActivitySwitch):
+    """Define a RainMachine program."""
+
+    async def async_start_program(self) -> None:
+        """Start the program."""
+        await self.async_turn_on()
+
+    async def async_stop_program(self) -> None:
+        """Stop the program."""
+        await self.async_turn_off()
+
+    @raise_on_request_error
+    async def async_turn_off_when_active(self, **kwargs: Any) -> None:
+        """Turn the switch off when its associated activity is active."""
+        await self._data.controller.programs.stop(self.entity_description.uid)
+        self._update_activities()
+
+    @raise_on_request_error
+    async def async_turn_on_when_active(self, **kwargs: Any) -> None:
+        """Turn the switch on when its associated activity is active."""
+        await self._data.controller.programs.start(self.entity_description.uid)
+        self._update_activities()
+
+    @callback
+    def update_from_latest_data(self) -> None:
+        """Update the entity when new data is received."""
+        data = self.coordinator.data[self.entity_description.uid]
+
+        self._attr_is_on = bool(data["status"])
+
+        next_run: str | None
+        if data.get("nextRun") is None:
+            next_run = None
+        else:
             next_run = datetime.strptime(
-                f"{self._data['nextRun']} {self._data['startTime']}",
+                f"{data['nextRun']} {data['startTime']}",
                 "%Y-%m-%d %H:%M",
             ).isoformat()
-        else:
-            next_run = None
 
-        self._attrs.update(
+        self._attr_extra_state_attributes.update(
             {
-                ATTR_ID: self._uid,
+                ATTR_ID: self.entity_description.uid,
                 ATTR_NEXT_RUN: next_run,
-                ATTR_SOAK: self.coordinator.data[self._uid].get("soak"),
-                ATTR_STATUS: RUN_STATUS_MAP[self.coordinator.data[self._uid]["status"]],
-                ATTR_ZONES: ", ".join(z["name"] for z in self.zones),
+                ATTR_SOAK: data.get("soak"),
+                ATTR_STATUS: RUN_STATE_MAP[data["status"]],
+                ATTR_ZONES: [z for z in data["wateringTimes"] if z["active"]],
             }
         )
 
 
-class RainMachineZone(RainMachineSwitch):
-    """A RainMachine zone."""
+class RainMachineProgramEnabled(RainMachineEnabledSwitch):
+    """Define a switch to enable/disable a RainMachine program."""
 
-    async def async_turn_off(self, **kwargs) -> None:
-        """Turn the zone off."""
-        await self._async_run_switch_coroutine(self._controller.zones.stop(self._uid))
+    @raise_on_request_error
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        """Disable the program."""
+        tasks = [
+            self._data.controller.programs.stop(self.entity_description.uid),
+            self._data.controller.programs.disable(self.entity_description.uid),
+        ]
+        await asyncio.gather(*tasks)
+        self._update_activities()
 
-    async def async_turn_on(self, **kwargs) -> None:
-        """Turn the zone on."""
-        await self._async_run_switch_coroutine(
-            self._controller.zones.start(
-                self._uid,
-                self._entry.options[CONF_ZONE_RUN_TIME],
-            )
+    @raise_on_request_error
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        """Enable the program."""
+        await self._data.controller.programs.enable(self.entity_description.uid)
+        self._update_activities()
+
+
+class RainMachineRestrictionSwitch(RainMachineBaseSwitch):
+    """Define a RainMachine restriction setting."""
+
+    _attr_entity_category = EntityCategory.CONFIG
+    entity_description: RainMachineRestrictionSwitchDescription
+
+    @raise_on_request_error
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        """Disable the restriction."""
+        await self._data.controller.restrictions.set_universal(
+            {self.entity_description.data_key: False}
         )
+        self._attr_is_on = False
+        self.async_write_ha_state()
+
+    @raise_on_request_error
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        """Enable the restriction."""
+        await self._data.controller.restrictions.set_universal(
+            {self.entity_description.data_key: True}
+        )
+        self._attr_is_on = True
+        self.async_write_ha_state()
 
     @callback
     def update_from_latest_data(self) -> None:
-        """Update the state."""
-        super().update_from_latest_data()
+        """Update the entity when new data is received."""
+        self._attr_is_on = self.coordinator.data[self.entity_description.data_key]
 
-        self._is_on = bool(self._data["state"])
 
-        self._attrs.update(
-            {
-                ATTR_STATUS: RUN_STATUS_MAP[self._data["state"]],
-                ATTR_AREA: self._data.get("waterSense").get("area"),
-                ATTR_CURRENT_CYCLE: self._data.get("cycle"),
-                ATTR_FIELD_CAPACITY: self._data.get("waterSense").get("fieldCapacity"),
-                ATTR_ID: self._data["uid"],
-                ATTR_NO_CYCLES: self._data.get("noOfCycles"),
-                ATTR_PRECIP_RATE: self._data.get("waterSense").get("precipitationRate"),
-                ATTR_RESTRICTIONS: self._data.get("restriction"),
-                ATTR_SLOPE: SLOPE_TYPE_MAP.get(self._data.get("slope")),
-                ATTR_SOIL_TYPE: SOIL_TYPE_MAP.get(self._data.get("sun")),
-                ATTR_SPRINKLER_TYPE: SPRINKLER_TYPE_MAP.get(self._data.get("group_id")),
-                ATTR_SUN_EXPOSURE: SUN_EXPOSURE_MAP.get(self._data.get("sun")),
-                ATTR_TIME_REMAINING: self._data.get("remaining"),
-                ATTR_VEGETATION_TYPE: VEGETATION_MAP.get(self._data.get("type")),
-            }
+class RainMachineZone(RainMachineActivitySwitch):
+    """Define a RainMachine zone."""
+
+    async def async_start_zone(self, *, zone_run_time: int) -> None:
+        """Start a particular zone for a certain amount of time."""
+        await self.async_turn_on(duration=zone_run_time)
+
+    async def async_stop_zone(self) -> None:
+        """Stop a zone."""
+        await self.async_turn_off()
+
+    @raise_on_request_error
+    async def async_turn_off_when_active(self, **kwargs: Any) -> None:
+        """Turn the switch off when its associated activity is active."""
+        await self._data.controller.zones.stop(self.entity_description.uid)
+        self._update_activities()
+
+    @raise_on_request_error
+    async def async_turn_on_when_active(self, **kwargs: Any) -> None:
+        """Turn the switch on when its associated activity is active."""
+        # 1. Use duration parameter if provided from service call
+        duration = kwargs.get(CONF_DURATION)
+        if not duration:
+            if (
+                self._entry.options[CONF_USE_APP_RUN_TIMES]
+                and ATTR_ZONE_RUN_TIME in self._attr_extra_state_attributes
+            ):
+                # 2. Use app's zone-specific default, if enabled and available
+                duration = self._attr_extra_state_attributes[ATTR_ZONE_RUN_TIME]
+            else:
+                # 3. Fall back to global zone default duration
+                duration = self._entry.options[CONF_DEFAULT_ZONE_RUN_TIME]
+        await self._data.controller.zones.start(
+            self.entity_description.uid,
+            duration,
         )
+        self._update_activities()
+
+    @callback
+    def update_from_latest_data(self) -> None:
+        """Update the entity when new data is received."""
+        data = self.coordinator.data[self.entity_description.uid]
+
+        self._attr_is_on = bool(data["state"])
+
+        attrs = {
+            ATTR_CURRENT_CYCLE: data["cycle"],
+            ATTR_ID: data["uid"],
+            ATTR_NO_CYCLES: data["noOfCycles"],
+            ATTR_RESTRICTIONS: data["restriction"],
+            ATTR_SLOPE: SLOPE_TYPE_MAP.get(data["slope"], 99),
+            ATTR_SOIL_TYPE: SOIL_TYPE_MAP.get(data["soil"], 99),
+            ATTR_SPRINKLER_TYPE: SPRINKLER_TYPE_MAP.get(data["group_id"], 99),
+            ATTR_STATUS: RUN_STATE_MAP[data["state"]],
+            ATTR_SUN_EXPOSURE: SUN_EXPOSURE_MAP.get(data.get("sun")),
+            ATTR_VEGETATION_TYPE: VEGETATION_MAP.get(data["type"], 99),
+        }
+
+        if "waterSense" in data:
+            if "area" in data["waterSense"]:
+                attrs[ATTR_AREA] = round(data["waterSense"]["area"], 2)
+            if "fieldCapacity" in data["waterSense"]:
+                attrs[ATTR_FIELD_CAPACITY] = round(
+                    data["waterSense"]["fieldCapacity"], 2
+                )
+            if "precipitationRate" in data["waterSense"]:
+                attrs[ATTR_PRECIP_RATE] = round(
+                    data["waterSense"]["precipitationRate"], 2
+                )
+
+        if self._entry.options[CONF_USE_APP_RUN_TIMES]:
+            provision_data = self._data.coordinators[DATA_PROVISION_SETTINGS].data
+            if zone_durations := provision_data.get("system", {}).get("zoneDuration"):
+                attrs[ATTR_ZONE_RUN_TIME] = zone_durations[
+                    list(self.coordinator.data).index(self.entity_description.uid)
+                ]
+
+        self._attr_extra_state_attributes.update(attrs)
+
+
+class RainMachineZoneEnabled(RainMachineEnabledSwitch):
+    """Define a switch to enable/disable a RainMachine zone."""
+
+    @raise_on_request_error
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        """Disable the zone."""
+        tasks = [
+            self._data.controller.zones.stop(self.entity_description.uid),
+            self._data.controller.zones.disable(self.entity_description.uid),
+        ]
+        await asyncio.gather(*tasks)
+        self._update_activities()
+
+    @raise_on_request_error
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        """Enable the zone."""
+        await self._data.controller.zones.enable(self.entity_description.uid)
+        self._update_activities()

@@ -1,20 +1,20 @@
 """Config flow for Logitech Squeezebox integration."""
 import asyncio
+from http import HTTPStatus
 import logging
+from typing import TYPE_CHECKING
 
+import async_timeout
 from pysqueezebox import Server, async_discover
 import voluptuous as vol
 
-from homeassistant import config_entries
-from homeassistant.components.dhcp import IP_ADDRESS, MAC_ADDRESS
-from homeassistant.const import (
-    CONF_HOST,
-    CONF_PASSWORD,
-    CONF_PORT,
-    CONF_USERNAME,
-    HTTP_UNAUTHORIZED,
-)
+from homeassistant import config_entries, data_entry_flow
+from homeassistant.components import dhcp
+from homeassistant.components.media_player import DOMAIN as MP_DOMAIN
+from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_PORT, CONF_USERNAME
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.device_registry import format_mac
+from homeassistant.helpers.entity_registry import async_get
 
 from .const import DEFAULT_PORT, DOMAIN
 
@@ -61,7 +61,7 @@ class SqueezeboxConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     VERSION = 1
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize an instance of the squeezebox config flow."""
         self.data_schema = _base_schema()
         self.discovery_info = None
@@ -96,8 +96,7 @@ class SqueezeboxConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self.data_schema = _base_schema(self.discovery_info)
 
     async def _validate_input(self, data):
-        """
-        Validate the user input allows us to connect.
+        """Validate the user input allows us to connect.
 
         Retrieve unique id and abort if already configured.
         """
@@ -112,7 +111,7 @@ class SqueezeboxConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         try:
             status = await server.async_query("serverstatus")
             if not status:
-                if server.http_status == HTTP_UNAUTHORIZED:
+                if server.http_status == HTTPStatus.UNAUTHORIZED:
                     return "invalid_auth"
                 return "cannot_connect"
         except Exception:  # pylint: disable=broad-except
@@ -132,7 +131,8 @@ class SqueezeboxConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         # no host specified, see if we can discover an unconfigured LMS server
         try:
-            await asyncio.wait_for(self._discover(), timeout=TIMEOUT)
+            async with async_timeout.timeout(TIMEOUT):
+                await self._discover()
             return await self.async_step_edit()
         except asyncio.TimeoutError:
             errors["base"] = "no_server_found"
@@ -159,35 +159,18 @@ class SqueezeboxConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             step_id="edit", data_schema=self.data_schema, errors=errors
         )
 
-    async def async_step_import(self, config):
-        """Import a config flow from configuration."""
-        error = await self._validate_input(config)
-        if error:
-            return self.async_abort(reason=error)
-        return self.async_create_entry(title=config[CONF_HOST], data=config)
-
-    async def async_step_discovery(self, discovery_info):
-        """Handle discovery."""
-        _LOGGER.debug("Reached discovery flow with info: %s", discovery_info)
+    async def async_step_integration_discovery(self, discovery_info):
+        """Handle discovery of a server."""
+        _LOGGER.debug("Reached server discovery flow with info: %s", discovery_info)
         if "uuid" in discovery_info:
             await self.async_set_unique_id(discovery_info.pop("uuid"))
             self._abort_if_unique_id_configured()
         else:
             # attempt to connect to server and determine uuid. will fail if
             # password required
-
-            if CONF_HOST not in discovery_info and IP_ADDRESS in discovery_info:
-                discovery_info[CONF_HOST] = discovery_info[IP_ADDRESS]
-
-            if CONF_PORT not in discovery_info:
-                discovery_info[CONF_PORT] = DEFAULT_PORT
-
             error = await self._validate_input(discovery_info)
             if error:
-                if MAC_ADDRESS in discovery_info:
-                    await self.async_set_unique_id(discovery_info[MAC_ADDRESS])
-                else:
-                    await self._async_handle_discovery_without_unique_id()
+                await self._async_handle_discovery_without_unique_id()
 
         # update schema with suggested values from discovery
         self.data_schema = _base_schema(discovery_info)
@@ -195,3 +178,27 @@ class SqueezeboxConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self.context.update({"title_placeholders": {"host": discovery_info[CONF_HOST]}})
 
         return await self.async_step_edit()
+
+    async def async_step_dhcp(
+        self, discovery_info: dhcp.DhcpServiceInfo
+    ) -> data_entry_flow.FlowResult:
+        """Handle dhcp discovery of a Squeezebox player."""
+        _LOGGER.debug(
+            "Reached dhcp discovery of a player with info: %s", discovery_info
+        )
+        await self.async_set_unique_id(format_mac(discovery_info.macaddress))
+        self._abort_if_unique_id_configured()
+
+        _LOGGER.debug("Configuring dhcp player with unique id: %s", self.unique_id)
+
+        registry = async_get(self.hass)
+
+        if TYPE_CHECKING:
+            assert self.unique_id
+        # if we have detected this player, do nothing. if not, there must be a server out there for us to configure, so start the normal user flow (which tries to autodetect server)
+        if registry.async_get_entity_id(MP_DOMAIN, DOMAIN, self.unique_id) is not None:
+            # this player is already known, so do nothing other than mark as configured
+            raise data_entry_flow.AbortFlow("already_configured")
+
+        # if the player is unknown, then we likely need to configure its server
+        return await self.async_step_user()

@@ -45,14 +45,14 @@ class FlickConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         )
 
         try:
-            with async_timeout.timeout(60):
+            async with async_timeout.timeout(60):
                 token = await auth.async_get_access_token()
         except asyncio.TimeoutError as err:
             raise CannotConnect() from err
         except AuthException as err:
             raise InvalidAuth() from err
-        else:
-            return token is not None
+
+        return token is not None
 
     async def async_step_user(self, user_input=None):
         """Handle gathering login info."""

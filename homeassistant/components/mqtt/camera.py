@@ -1,80 +1,121 @@
 """Camera that loads a picture from an MQTT topic."""
+from __future__ import annotations
+
+from base64 import b64decode
 import functools
+import logging
 
 import voluptuous as vol
 
 from homeassistant.components import camera
 from homeassistant.components.camera import Camera
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_NAME
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import config_validation as cv
-from homeassistant.helpers.reload import async_setup_reload_service
-from homeassistant.helpers.typing import ConfigType
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 
-from . import CONF_QOS, DOMAIN, PLATFORMS, subscription
-from .. import mqtt
+from . import subscription
+from .config import MQTT_BASE_SCHEMA
+from .const import CONF_QOS, CONF_TOPIC
 from .debug_info import log_messages
 from .mixins import MQTT_ENTITY_COMMON_SCHEMA, MqttEntity, async_setup_entry_helper
+from .models import ReceiveMessage
+from .util import valid_subscribe_topic
 
-CONF_TOPIC = "topic"
+_LOGGER = logging.getLogger(__name__)
+
+CONF_IMAGE_ENCODING = "image_encoding"
+
 DEFAULT_NAME = "MQTT Camera"
 
-PLATFORM_SCHEMA = mqtt.MQTT_BASE_PLATFORM_SCHEMA.extend(
+MQTT_CAMERA_ATTRIBUTES_BLOCKED = frozenset(
     {
-        vol.Optional(CONF_NAME, default=DEFAULT_NAME): cv.string,
-        vol.Required(CONF_TOPIC): mqtt.valid_subscribe_topic,
+        "access_token",
+        "brand",
+        "model_name",
+        "motion_detection",
+    }
+)
+
+PLATFORM_SCHEMA_BASE = MQTT_BASE_SCHEMA.extend(
+    {
+        vol.Optional(CONF_NAME): vol.Any(cv.string, None),
+        vol.Required(CONF_TOPIC): valid_subscribe_topic,
+        vol.Optional(CONF_IMAGE_ENCODING): "b64",
     }
 ).extend(MQTT_ENTITY_COMMON_SCHEMA.schema)
 
+PLATFORM_SCHEMA_MODERN = vol.All(
+    PLATFORM_SCHEMA_BASE.schema,
+)
 
-async def async_setup_platform(
-    hass: HomeAssistant, config: ConfigType, async_add_entities, discovery_info=None
-):
-    """Set up MQTT camera through configuration.yaml."""
-    await async_setup_reload_service(hass, DOMAIN, PLATFORMS)
-    await _async_setup_entity(async_add_entities, config)
+DISCOVERY_SCHEMA = PLATFORM_SCHEMA_BASE.extend({}, extra=vol.REMOVE_EXTRA)
 
 
-async def async_setup_entry(hass, config_entry, async_add_entities):
-    """Set up MQTT camera dynamically through MQTT discovery."""
+async def async_setup_entry(
+    hass: HomeAssistant,
+    config_entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
+    """Set up MQTT camera through YAML and through MQTT discovery."""
     setup = functools.partial(
-        _async_setup_entity, async_add_entities, config_entry=config_entry
+        _async_setup_entity, hass, async_add_entities, config_entry=config_entry
     )
-    await async_setup_entry_helper(hass, camera.DOMAIN, setup, PLATFORM_SCHEMA)
+    await async_setup_entry_helper(hass, camera.DOMAIN, setup, DISCOVERY_SCHEMA)
 
 
 async def _async_setup_entity(
-    async_add_entities, config, config_entry=None, discovery_data=None
-):
+    hass: HomeAssistant,
+    async_add_entities: AddEntitiesCallback,
+    config: ConfigType,
+    config_entry: ConfigEntry,
+    discovery_data: DiscoveryInfoType | None = None,
+) -> None:
     """Set up the MQTT Camera."""
-    async_add_entities([MqttCamera(config, config_entry, discovery_data)])
+    async_add_entities([MqttCamera(hass, config, config_entry, discovery_data)])
 
 
 class MqttCamera(MqttEntity, Camera):
     """representation of a MQTT camera."""
 
-    def __init__(self, config, config_entry, discovery_data):
+    _default_name = DEFAULT_NAME
+    _entity_id_format: str = camera.ENTITY_ID_FORMAT
+    _attributes_extra_blocked: frozenset[str] = MQTT_CAMERA_ATTRIBUTES_BLOCKED
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        config: ConfigType,
+        config_entry: ConfigEntry,
+        discovery_data: DiscoveryInfoType | None,
+    ) -> None:
         """Initialize the MQTT Camera."""
-        self._last_image = None
+        self._last_image: bytes | None = None
 
         Camera.__init__(self)
-        MqttEntity.__init__(self, None, config, config_entry, discovery_data)
+        MqttEntity.__init__(self, hass, config, config_entry, discovery_data)
 
     @staticmethod
-    def config_schema():
+    def config_schema() -> vol.Schema:
         """Return the config schema."""
-        return PLATFORM_SCHEMA
+        return DISCOVERY_SCHEMA
 
-    async def _subscribe_topics(self):
+    def _prepare_subscribe_topics(self) -> None:
         """(Re)Subscribe to topics."""
 
         @callback
         @log_messages(self.hass, self.entity_id)
-        def message_received(msg):
+        def message_received(msg: ReceiveMessage) -> None:
             """Handle new MQTT messages."""
-            self._last_image = msg.payload
+            if CONF_IMAGE_ENCODING in self._config:
+                self._last_image = b64decode(msg.payload)
+            else:
+                assert isinstance(msg.payload, bytes)
+                self._last_image = msg.payload
 
-        self._sub_state = await subscription.async_subscribe_topics(
+        self._sub_state = subscription.async_prepare_subscribe_topics(
             self.hass,
             self._sub_state,
             {
@@ -87,6 +128,12 @@ class MqttCamera(MqttEntity, Camera):
             },
         )
 
-    async def async_camera_image(self):
+    async def _subscribe_topics(self) -> None:
+        """(Re)Subscribe to topics."""
+        await subscription.async_subscribe_topics(self.hass, self._sub_state)
+
+    async def async_camera_image(
+        self, width: int | None = None, height: int | None = None
+    ) -> bytes | None:
         """Return image response."""
         return self._last_image

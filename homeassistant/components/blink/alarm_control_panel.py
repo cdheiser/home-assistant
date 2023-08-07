@@ -1,22 +1,32 @@
 """Support for Blink Alarm Control Panel."""
+from __future__ import annotations
+
 import logging
 
-from homeassistant.components.alarm_control_panel import AlarmControlPanelEntity
-from homeassistant.components.alarm_control_panel.const import SUPPORT_ALARM_ARM_AWAY
+from homeassistant.components.alarm_control_panel import (
+    AlarmControlPanelEntity,
+    AlarmControlPanelEntityFeature,
+)
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
     ATTR_ATTRIBUTION,
     STATE_ALARM_ARMED_AWAY,
     STATE_ALARM_DISARMED,
 )
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DEFAULT_ATTRIBUTION, DOMAIN
+from .const import DEFAULT_ATTRIBUTION, DEFAULT_BRAND, DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
 ICON = "mdi:security"
 
 
-async def async_setup_entry(hass, config, async_add_entities):
+async def async_setup_entry(
+    hass: HomeAssistant, config: ConfigEntry, async_add_entities: AddEntitiesCallback
+) -> None:
     """Set up the Blink Alarm Control Panels."""
     data = hass.data[DOMAIN][config.entry_id]
 
@@ -29,63 +39,48 @@ async def async_setup_entry(hass, config, async_add_entities):
 class BlinkSyncModule(AlarmControlPanelEntity):
     """Representation of a Blink Alarm Control Panel."""
 
+    _attr_icon = ICON
+    _attr_supported_features = AlarmControlPanelEntityFeature.ARM_AWAY
+    _attr_name = None
+    _attr_has_entity_name = True
+
     def __init__(self, data, name, sync):
         """Initialize the alarm control panel."""
         self.data = data
         self.sync = sync
         self._name = name
-        self._state = None
+        self._attr_unique_id = sync.serial
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, sync.serial)},
+            name=f"{DOMAIN} {name}",
+            manufacturer=DEFAULT_BRAND,
+        )
 
-    @property
-    def unique_id(self):
-        """Return the unique id for the sync module."""
-        return self.sync.serial
-
-    @property
-    def icon(self):
-        """Return icon."""
-        return ICON
-
-    @property
-    def state(self):
-        """Return the state of the device."""
-        return self._state
-
-    @property
-    def supported_features(self) -> int:
-        """Return the list of supported features."""
-        return SUPPORT_ALARM_ARM_AWAY
-
-    @property
-    def name(self):
-        """Return the name of the panel."""
-        return f"{DOMAIN} {self._name}"
-
-    @property
-    def extra_state_attributes(self):
-        """Return the state attributes."""
-        attr = self.sync.attributes
-        attr["network_info"] = self.data.networks
-        attr["associated_cameras"] = list(self.sync.cameras)
-        attr[ATTR_ATTRIBUTION] = DEFAULT_ATTRIBUTION
-        return attr
-
-    def update(self):
+    def update(self) -> None:
         """Update the state of the device."""
-        _LOGGER.debug("Updating Blink Alarm Control Panel %s", self._name)
-        self.data.refresh()
-        mode = self.sync.arm
-        if mode:
-            self._state = STATE_ALARM_ARMED_AWAY
-        else:
-            self._state = STATE_ALARM_DISARMED
+        if self.data.check_if_ok_to_update():
+            _LOGGER.debug(
+                "Initiating a blink.refresh() from BlinkSyncModule('%s') (%s)",
+                self._name,
+                self.data,
+            )
+            self.data.refresh()
+            _LOGGER.info("Updating State of Blink Alarm Control Panel '%s'", self._name)
 
-    def alarm_disarm(self, code=None):
+        self._attr_state = (
+            STATE_ALARM_ARMED_AWAY if self.sync.arm else STATE_ALARM_DISARMED
+        )
+        self.sync.attributes["network_info"] = self.data.networks
+        self.sync.attributes["associated_cameras"] = list(self.sync.cameras)
+        self.sync.attributes[ATTR_ATTRIBUTION] = DEFAULT_ATTRIBUTION
+        self._attr_extra_state_attributes = self.sync.attributes
+
+    def alarm_disarm(self, code: str | None = None) -> None:
         """Send disarm command."""
         self.sync.arm = False
         self.sync.refresh()
 
-    def alarm_arm_away(self, code=None):
+    def alarm_arm_away(self, code: str | None = None) -> None:
         """Send arm command."""
         self.sync.arm = True
         self.sync.refresh()

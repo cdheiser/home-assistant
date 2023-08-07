@@ -2,10 +2,11 @@
 from unittest.mock import AsyncMock, Mock, patch
 
 from homeassistant.components import emulated_roku
+from homeassistant.core import HomeAssistant
 from homeassistant.setup import async_setup_component
 
 
-async def test_config_required_fields(hass):
+async def test_config_required_fields(hass: HomeAssistant, mock_get_source_ip) -> None:
     """Test that configuration is successful with required fields."""
     with patch.object(emulated_roku, "configured_servers", return_value=[]), patch(
         "homeassistant.components.emulated_roku.binding.EmulatedRokuServer",
@@ -30,7 +31,9 @@ async def test_config_required_fields(hass):
         )
 
 
-async def test_config_already_registered_not_configured(hass):
+async def test_config_already_registered_not_configured(
+    hass: HomeAssistant, mock_get_source_ip
+) -> None:
     """Test that an already registered name causes the entry to be ignored."""
     with patch(
         "homeassistant.components.emulated_roku.binding.EmulatedRokuServer",
@@ -59,7 +62,7 @@ async def test_config_already_registered_not_configured(hass):
     assert len(instantiate.mock_calls) == 0
 
 
-async def test_setup_entry_successful(hass):
+async def test_setup_entry_successful(hass: HomeAssistant) -> None:
     """Test setup entry is successful."""
     entry = Mock()
     entry.data = {
@@ -90,10 +93,14 @@ async def test_setup_entry_successful(hass):
     assert roku_instance.bind_multicast is False
 
 
-async def test_unload_entry(hass):
+async def test_unload_entry(hass: HomeAssistant) -> None:
     """Test being able to unload an entry."""
     entry = Mock()
-    entry.data = {"name": "Emulated Roku Test", "listen_port": 8060}
+    entry.data = {
+        "name": "Emulated Roku Test",
+        "listen_port": 8060,
+        emulated_roku.CONF_HOST_IP: "1.2.3.5",
+    }
 
     with patch(
         "homeassistant.components.emulated_roku.binding.EmulatedRokuServer",

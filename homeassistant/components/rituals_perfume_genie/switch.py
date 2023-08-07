@@ -1,24 +1,48 @@
 """Support for Rituals Perfume Genie switches."""
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import Any
 
 from pyrituals import Diffuser
 
-from homeassistant.components.switch import SwitchEntity
+from homeassistant.components.switch import SwitchEntity, SwitchEntityDescription
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from . import RitualsDataUpdateCoordinator
-from .const import ATTRIBUTES, COORDINATORS, DEVICES, DOMAIN
+from .const import DOMAIN
+from .coordinator import RitualsDataUpdateCoordinator
 from .entity import DiffuserEntity
 
-FAN = "fanc"
-SPEED = "speedc"
-ROOM = "roomc"
 
-ON_STATE = "1"
+@dataclass
+class RitualsEntityDescriptionMixin:
+    """Mixin values for Rituals entities."""
+
+    is_on_fn: Callable[[Diffuser], bool]
+    turn_on_fn: Callable[[Diffuser], Awaitable[None]]
+    turn_off_fn: Callable[[Diffuser], Awaitable[None]]
+
+
+@dataclass
+class RitualsSwitchEntityDescription(
+    SwitchEntityDescription, RitualsEntityDescriptionMixin
+):
+    """Class describing Rituals switch entities."""
+
+
+ENTITY_DESCRIPTIONS = (
+    RitualsSwitchEntityDescription(
+        key="is_on",
+        name=None,
+        icon="mdi:fan",
+        is_on_fn=lambda diffuser: diffuser.is_on,
+        turn_on_fn=lambda diffuser: diffuser.turn_on(),
+        turn_off_fn=lambda diffuser: diffuser.turn_off(),
+    ),
+)
 
 
 async def async_setup_entry(
@@ -27,59 +51,45 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up the diffuser switch."""
-    diffusers = hass.data[DOMAIN][config_entry.entry_id][DEVICES]
-    coordinators = hass.data[DOMAIN][config_entry.entry_id][COORDINATORS]
-    entities = []
-    for hublot, diffuser in diffusers.items():
-        coordinator = coordinators[hublot]
-        entities.append(DiffuserSwitch(diffuser, coordinator))
+    coordinators: dict[str, RitualsDataUpdateCoordinator] = hass.data[DOMAIN][
+        config_entry.entry_id
+    ]
 
-    async_add_entities(entities)
+    async_add_entities(
+        RitualsSwitchEntity(coordinator, description)
+        for coordinator in coordinators.values()
+        for description in ENTITY_DESCRIPTIONS
+    )
 
 
-class DiffuserSwitch(SwitchEntity, DiffuserEntity):
+class RitualsSwitchEntity(DiffuserEntity, SwitchEntity):
     """Representation of a diffuser switch."""
 
+    entity_description: RitualsSwitchEntityDescription
+
     def __init__(
-        self, diffuser: Diffuser, coordinator: RitualsDataUpdateCoordinator
+        self,
+        coordinator: RitualsDataUpdateCoordinator,
+        description: RitualsSwitchEntityDescription,
     ) -> None:
         """Initialize the diffuser switch."""
-        super().__init__(diffuser, coordinator, "")
-        self._is_on = self._diffuser.is_on
-
-    @property
-    def icon(self) -> str:
-        """Return the icon of the device."""
-        return "mdi:fan"
-
-    @property
-    def extra_state_attributes(self) -> dict[str, Any]:
-        """Return the device state attributes."""
-        attributes = {
-            "fan_speed": self._diffuser.hub_data[ATTRIBUTES][SPEED],
-            "room_size": self._diffuser.hub_data[ATTRIBUTES][ROOM],
-        }
-        return attributes
-
-    @property
-    def is_on(self) -> bool:
-        """If the device is currently on or off."""
-        return self._is_on
+        super().__init__(coordinator, description)
+        self._attr_is_on = description.is_on_fn(coordinator.diffuser)
 
     async def async_turn_on(self, **kwargs: Any) -> None:
-        """Turn the device on."""
-        await self._diffuser.turn_on()
-        self._is_on = True
+        """Turn the switch on."""
+        await self.entity_description.turn_on_fn(self.coordinator.diffuser)
+        self._attr_is_on = True
         self.async_write_ha_state()
 
     async def async_turn_off(self, **kwargs: Any) -> None:
-        """Turn the device off."""
-        await self._diffuser.turn_off()
-        self._is_on = False
+        """Turn the switch off."""
+        await self.entity_description.turn_off_fn(self.coordinator.diffuser)
+        self._attr_is_on = False
         self.async_write_ha_state()
 
     @callback
     def _handle_coordinator_update(self) -> None:
         """Handle updated data from the coordinator."""
-        self._is_on = self._diffuser.is_on
-        self.async_write_ha_state()
+        self._attr_is_on = self.entity_description.is_on_fn(self.coordinator.diffuser)
+        super()._handle_coordinator_update()

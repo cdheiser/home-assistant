@@ -1,19 +1,26 @@
 """Config flow for Met Office integration."""
-import logging
+from __future__ import annotations
 
+import logging
+from typing import Any
+
+import datapoint
 import voluptuous as vol
 
 from homeassistant import config_entries, core, exceptions
 from homeassistant.const import CONF_API_KEY, CONF_LATITUDE, CONF_LONGITUDE, CONF_NAME
+from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers import config_validation as cv
 
 from .const import DOMAIN
-from .data import MetOfficeData
+from .helpers import fetch_site
 
 _LOGGER = logging.getLogger(__name__)
 
 
-async def validate_input(hass: core.HomeAssistant, data):
+async def validate_input(
+    hass: core.HomeAssistant, data: dict[str, Any]
+) -> dict[str, str]:
     """Validate that the user input allows us to connect to DataPoint.
 
     Data has the keys from DATA_SCHEMA with values provided by the user.
@@ -22,12 +29,16 @@ async def validate_input(hass: core.HomeAssistant, data):
     longitude = data[CONF_LONGITUDE]
     api_key = data[CONF_API_KEY]
 
-    metoffice_data = MetOfficeData(hass, api_key, latitude, longitude)
-    await metoffice_data.async_update_site()
-    if metoffice_data.site_name is None:
+    connection = datapoint.connection(api_key=api_key)
+
+    site = await hass.async_add_executor_job(
+        fetch_site, connection, latitude, longitude
+    )
+
+    if site is None:
         raise CannotConnect()
 
-    return {"site_name": metoffice_data.site_name}
+    return {"site_name": site.name}
 
 
 class MetOfficeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -35,7 +46,9 @@ class MetOfficeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     VERSION = 1
 
-    async def async_step_user(self, user_input=None):
+    async def async_step_user(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
         """Handle the initial step."""
         errors = {}
         if user_input is not None:
