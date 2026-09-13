@@ -328,4 +328,10 @@ def _async_check_keypad_identifiers(
 
 async def async_unload_entry(hass: HomeAssistant, entry: LutronConfigEntry) -> bool:
     """Clean up resources and entities associated with the integration."""
-    return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    if unload_ok:
+        # Platforms are unloaded first so entities unsubscribe while the client is
+        # still live. disconnect() joins the reader thread, so it has to run in the
+        # executor; it is terminal, but setup builds a fresh client each time.
+        await hass.async_add_executor_job(entry.runtime_data.client.disconnect)
+    return unload_ok

@@ -51,6 +51,52 @@ async def test_unload_entry(
     await hass.async_block_till_done()
 
 
+async def test_unload_entry_disconnects_client(
+    hass: HomeAssistant, mock_lutron: MagicMock, mock_config_entry: MockConfigEntry
+) -> None:
+    """Unloading must disconnect the client so its reader thread is not leaked.
+
+    Without this the pylutron client and its telnet session stay alive after the
+    entry is unloaded, so every reload leaks a thread and a socket.
+    """
+    mock_config_entry.add_to_hass(hass)
+
+    assert await async_setup_component(hass, DOMAIN, {})
+    await hass.async_block_till_done()
+
+    mock_lutron.disconnect.assert_not_called()
+
+    assert await hass.config_entries.async_unload(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    mock_lutron.disconnect.assert_called_once()
+
+
+async def test_unload_entry_unsubscribes_entities(
+    hass: HomeAssistant, mock_lutron: MagicMock, mock_config_entry: MockConfigEntry
+) -> None:
+    """Entities must drop their pylutron subscription when they are removed.
+
+    subscribe() hands back an unsubscribe callable. If it is discarded, the client
+    keeps calling into entities that no longer exist, so every reload leaves
+    another set of dead callbacks behind.
+    """
+    mock_config_entry.add_to_hass(hass)
+
+    assert await async_setup_component(hass, DOMAIN, {})
+    await hass.async_block_till_done()
+
+    light = mock_lutron.areas[0].outputs[0]
+    unsubscribe = light.subscribe.return_value
+    light.subscribe.assert_called_once()
+    unsubscribe.assert_not_called()
+
+    assert await hass.config_entries.async_unload(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    unsubscribe.assert_called_once()
+
+
 @pytest.mark.parametrize("method", ["load_xml_db", "connect"])
 async def test_setup_entry_not_ready(
     hass: HomeAssistant,

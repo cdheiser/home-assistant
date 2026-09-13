@@ -29,7 +29,9 @@ class LutronBaseEntity(Entity):
     @override
     async def async_added_to_hass(self) -> None:
         """Register callbacks."""
-        self._lutron_device.subscribe(self._update_callback, None)
+        # subscribe() hands back an unsubscribe callable. Dropping it leaves the
+        # client holding this entity's callback after the entity is gone.
+        self.async_on_remove(self._lutron_device.subscribe(self._update_callback, None))
 
     def _request_state(self) -> None:
         """Request the state."""
