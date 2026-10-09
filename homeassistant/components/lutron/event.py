@@ -72,6 +72,7 @@ class LutronEventEntity(LutronKeypad, EventEntity):
             self._attr_event_types = [LutronEventType.PRESS, LutronEventType.RELEASE]
         else:
             self._attr_event_types = [LutronEventType.SINGLE_PRESS]
+        self._seen_press = False
 
         self._full_id = slugify(f"{area_name} {name}")
         self._id = slugify(name)
@@ -94,8 +95,14 @@ class LutronEventEntity(LutronKeypad, EventEntity):
                 action = LutronEventType.PRESS
             else:
                 action = LutronEventType.RELEASE
-        elif event in (Button.Event.PRESSED, Button.Event.RELEASED):
-            # Buttons carrying a hold action report only a release, never a press.
+        elif event == Button.Event.PRESSED:
+            self._seen_press = True
+            action = LutronEventType.SINGLE_PRESS
+        elif event == Button.Event.RELEASED and not self._seen_press:
+            # Whether a button reports a press, a release or both is a property of
+            # the device, not of its type, so it can only be learned by watching.
+            # Releases fire until a press is seen, which is what a release-only
+            # button needs, and stop once the press above is serving the taps.
             action = LutronEventType.SINGLE_PRESS
 
         if action:
