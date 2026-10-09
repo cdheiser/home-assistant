@@ -99,10 +99,7 @@ class LutronEventEntity(LutronKeypad, EventEntity):
             self._seen_press = True
             action = LutronEventType.SINGLE_PRESS
         elif event == Button.Event.RELEASED and not self._seen_press:
-            # Whether a button reports a press, a release or both is a property of
-            # the device, not of its type, so it can only be learned by watching.
-            # Releases fire until a press is seen, which is what a release-only
-            # button needs, and stop once the press above is serving the taps.
+            # A release is only a tap on buttons that never report a press.
             action = LutronEventType.SINGLE_PRESS
 
         if action:
